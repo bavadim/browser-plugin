@@ -73,9 +73,7 @@ function init() {
   const detailValue = shadow.querySelector(".bak-detail-value");
   const statusEl = shadow.querySelector(".bak-status");
   const ttsPlayButton = shadow.querySelector(".bak-tts-play");
-  const ttsStopButton = shadow.querySelector(".bak-tts-stop");
   const ttsProgress = shadow.querySelector(".bak-tts-progress");
-  const ttsTime = shadow.querySelector(".bak-tts-time");
 
   const agentMessages = createAgentMessages(
     "System: You are a Habr article summarizer. Only work on habr.com article pages. " +
@@ -98,7 +96,7 @@ function init() {
   let ttsHref = location.href;
 
   const TTS_MODEL = "gpt-4o-mini-tts";
-  const TTS_VOICE = "alloy";
+  const TTS_VOICE = "cedar";
   const MAX_TTS_CHARS = 3500;
   const MAX_HTML_CHARS = 20000;
   const originalHtml = new Map();
@@ -143,13 +141,11 @@ function init() {
     if (!ttsPlayButton) return;
     if (ttsState === "loading") {
       ttsPlayButton.disabled = true;
-      ttsPlayButton.textContent = "Loading...";
-      if (ttsStopButton) ttsStopButton.disabled = true;
+      ttsPlayButton.innerHTML = "<span class=\"bak-tts-loading\">...</span>";
       return;
     }
     ttsPlayButton.disabled = false;
-    ttsPlayButton.textContent = ttsState === "playing" ? "Pause" : "Play";
-    if (ttsStopButton) ttsStopButton.disabled = ttsState === "idle";
+    ttsPlayButton.innerHTML = ttsState === "playing" ? getPauseIcon() : getPlayIcon();
   }
 
   function resetTtsAudioUrl() {
@@ -186,6 +182,14 @@ function init() {
       .trim();
   }
 
+  function getPlayIcon() {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"></path></svg>`;
+  }
+
+  function getPauseIcon() {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="6" width="4" height="12"></rect><rect x="13" y="6" width="4" height="12"></rect></svg>`;
+  }
+
   function extractHabrHtml() {
     const article = getHabrArticleRoot();
     const clone = article.cloneNode(true);
@@ -216,25 +220,17 @@ function init() {
     return chunks;
   }
 
-  function formatTime(seconds) {
-    if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-    const total = Math.floor(seconds);
-    const mins = Math.floor(total / 60);
-    const secs = total % 60;
-    return `${mins}:${String(secs).padStart(2, "0")}`;
-  }
-
   function updateTtsProgress() {
     if (!ttsAudio) return;
     const current = Number.isFinite(ttsAudio.currentTime) ? ttsAudio.currentTime : 0;
     const duration = Number.isFinite(ttsAudio.duration) ? ttsAudio.duration : 0;
     if (ttsProgress) {
       const max = duration > 0 ? duration : 1;
+      const value = Math.min(current, max);
       ttsProgress.max = String(max);
-      ttsProgress.value = String(Math.min(current, max));
-    }
-    if (ttsTime) {
-      ttsTime.textContent = `${formatTime(current)} / ${formatTime(duration)}`;
+      ttsProgress.value = String(value);
+      const pct = max > 0 ? (value / max) * 100 : 0;
+      ttsProgress.style.setProperty("--bak-progress", `${pct}%`);
     }
   }
 
@@ -301,7 +297,7 @@ function init() {
       sourceType = "Markdown";
     }
     const prompt =
-      "Ты редактор, готовишь текст для озвучки. " +
+      "Ты редактор, готовишь текст для озвучки на русском языке. " +
       "Нельзя выводить HTML, только чистый текст. " +
       "Нельзя оставлять ссылки, URL, якоря, email, соц-хендлы. " +
       "Нельзя добавлять факты или придумывать текст.\n\n" +
@@ -312,6 +308,7 @@ function init() {
       "3) Убери мусорные элементы (повторы, обрывки фраз, списки ссылок, подписи кнопок).\n" +
       "4) Сохрани структуру: заголовки и абзацы, списки, но без HTML.\n" +
       "5) Сохрани порядок и смысл, не добавляй ничего от себя.\n" +
+      "6) Ответ строго на русском языке.\n" +
       "Формат: чистый текст. Каждый абзац с новой строки.\n\n" +
       `Источник (${sourceType}):\n` +
       "```\n" +
@@ -351,6 +348,7 @@ function init() {
         body: JSON.stringify({
           model: TTS_MODEL,
           voice: TTS_VOICE,
+          instructions: "Speak in Russian with a natural, neutral accent.",
           input: chunks[i],
           response_format: "mp3"
         })
@@ -412,13 +410,6 @@ function init() {
     }
   });
 
-  ttsStopButton?.addEventListener("click", () => {
-    if (!ttsAudio) return;
-    ttsAudio.pause();
-    ttsAudio.currentTime = 0;
-    setTtsState("paused");
-    updateTtsProgress();
-  });
 
   function loadSettings() {
     return new Promise((resolve) => {
@@ -745,6 +736,9 @@ function init() {
   }
   currentPercent = 100;
   setTtsState("idle");
+  if (ttsPlayButton) {
+    ttsPlayButton.innerHTML = getPlayIcon();
+  }
   updateTtsProgress();
 }
 
@@ -861,14 +855,9 @@ function getTemplate() {
         <input class="bak-detail" type="range" min="0" max="100" step="10" value="100" />
         <span class="bak-detail-value">100%</span>
       </div>
-      <div class="bak-tts">
-        <button class="bak-tts-play" type="button">Play</button>
-        <button class="bak-tts-stop" type="button">Stop</button>
-        <span class="bak-tts-label">AI-озвучка</span>
-      </div>
-      <div class="bak-tts-progress-row">
+      <div class="bak-tts-row">
+        <button class="bak-tts-play" type="button" aria-label="Play"></button>
         <input class="bak-tts-progress" type="range" min="0" max="1" step="0.1" value="0" />
-        <span class="bak-tts-time">0:00 / 0:00</span>
       </div>
       <div class="bak-status"></div>
     </div>
@@ -933,70 +922,92 @@ function getStyles() {
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
-    .bak-tts {
+    .bak-tts-row {
       display: flex;
       justify-content: flex-start;
       align-items: center;
       gap: 8px;
+      height: 24px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #eef2f7;
+      border: 1px solid #e2e8f0;
     }
     .bak-tts-play {
       appearance: none;
-      border: 1px solid #e2e8f0;
-      background: #f8fafc;
+      border: none;
+      background: transparent;
       color: #0f172a;
-      font-weight: 600;
-      font-size: 0.8rem;
-      padding: 6px 12px;
-      border-radius: 10px;
+      padding: 0;
+      border-radius: 999px;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
     }
     .bak-tts-play:hover {
-      background: #e2e8f0;
+      background: rgba(15, 23, 42, 0.1);
     }
     .bak-tts-play:disabled {
       opacity: 0.6;
       cursor: default;
     }
-    .bak-tts-stop {
-      appearance: none;
-      border: 1px solid #e2e8f0;
-      background: #ffffff;
-      color: #0f172a;
-      font-weight: 600;
-      font-size: 0.8rem;
-      padding: 6px 12px;
-      border-radius: 10px;
-      cursor: pointer;
+    .bak-tts-loading {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
     }
-    .bak-tts-stop:hover {
-      background: #e2e8f0;
-    }
-    .bak-tts-stop:disabled {
-      opacity: 0.6;
-      cursor: default;
-    }
-    .bak-tts-label {
-      font-size: 0.72rem;
-      color: #64748b;
-      letter-spacing: 0.02em;
-      text-transform: uppercase;
-    }
-    .bak-tts-progress-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
+    .bak-tts-row svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
     }
     .bak-tts-progress {
       flex: 1;
-      height: 4px;
+      height: 3px;
       accent-color: #0f172a;
+      margin: 0;
+      --bak-progress: 0%;
+      -webkit-appearance: none;
+      appearance: none;
+      background: transparent;
     }
-    .bak-tts-time {
-      min-width: 84px;
-      text-align: right;
-      font-size: 0.75rem;
-      color: #64748b;
-      font-variant-numeric: tabular-nums;
+    .bak-tts-progress::-webkit-slider-runnable-track {
+      height: 3px;
+      border-radius: 999px;
+      background: linear-gradient(
+        to right,
+        #0f172a var(--bak-progress),
+        #cbd5f5 var(--bak-progress)
+      );
+    }
+    .bak-tts-progress::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #0f172a;
+      border: none;
+      margin-top: -1.5px;
+    }
+    .bak-tts-progress::-moz-range-track {
+      height: 3px;
+      border-radius: 999px;
+      background: #cbd5f5;
+    }
+    .bak-tts-progress::-moz-range-progress {
+      height: 3px;
+      border-radius: 999px;
+      background: #0f172a;
+    }
+    .bak-tts-progress::-moz-range-thumb {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #0f172a;
+      border: none;
     }
     @media (prefers-color-scheme: dark) {
       .bak-card {
@@ -1007,30 +1018,37 @@ function getStyles() {
       .bak-slider {
         color: rgba(226, 232, 240, 0.75);
       }
+      .bak-tts-row {
+        background: rgba(15, 23, 42, 0.6);
+        border-color: rgba(226, 232, 240, 0.12);
+      }
       .bak-tts-play {
-        background: #111827;
-        border-color: rgba(226, 232, 240, 0.16);
         color: #e2e8f0;
       }
       .bak-tts-play:hover {
-        background: #1f2937;
-      }
-      .bak-tts-stop {
-        background: #0b1220;
-        border-color: rgba(226, 232, 240, 0.16);
-        color: #e2e8f0;
-      }
-      .bak-tts-stop:hover {
-        background: #1f2937;
-      }
-      .bak-tts-label {
-        color: rgba(226, 232, 240, 0.6);
+        background: rgba(226, 232, 240, 0.12);
       }
       .bak-tts-progress {
         accent-color: #e2e8f0;
       }
-      .bak-tts-time {
-        color: rgba(226, 232, 240, 0.6);
+      .bak-tts-progress::-webkit-slider-runnable-track {
+        background: linear-gradient(
+          to right,
+          #e2e8f0 var(--bak-progress),
+          rgba(226, 232, 240, 0.25) var(--bak-progress)
+        );
+      }
+      .bak-tts-progress::-webkit-slider-thumb {
+        background: #e2e8f0;
+      }
+      .bak-tts-progress::-moz-range-track {
+        background: rgba(226, 232, 240, 0.25);
+      }
+      .bak-tts-progress::-moz-range-progress {
+        background: #e2e8f0;
+      }
+      .bak-tts-progress::-moz-range-thumb {
+        background: #e2e8f0;
       }
     }
   `;
