@@ -9,8 +9,7 @@
     "lint": "echo 'no lint yet'"
   },
   "dependencies": {
-    "browseragentkit": "github:bavadim/BrowserAgentKit",
-    "jquery": "^3.7.1"
+    "browseragentkit": "github:bavadim/BrowserAgentKit"
   },
   "devDependencies": {
     "vite": "^6.0.0"

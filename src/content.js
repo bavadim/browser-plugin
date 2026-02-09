@@ -3,20 +3,14 @@ import {
   createAgentMessages,
   isAgentError,
   runAgent,
-  domAppendHtmlTool,
-  domBindEventTool,
-  domRemoveTool,
-  domSubtreeHtmlTool,
-  domSummaryTool,
-  jsRunTool,
+  Tool,
   Skill,
   withStatus
 } from "browseragentkit";
 import { createChatUi } from "browseragentkit/ui";
-import $ from "jquery";
 
 const ROOT_ID = "__bak-root";
-const SKILL_ID = "bak-skill-page-edit";
+const SKILL_ID = "bak-skill-habr-article";
 const STORAGE_KEY = "bak_settings_v1";
 const HISTORY_KEY = "bak_history_v1";
 const UNDO_KEY = "bak_undo_v1";
@@ -24,11 +18,6 @@ const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-5.1-codex-mini";
 
 const api = globalThis.chrome ?? globalThis.browser;
-
-if (globalThis) {
-  globalThis.$ = $;
-  globalThis.jQuery = $;
-}
 
 const existingRoot = document.getElementById(ROOT_ID);
 if (existingRoot && globalThis.__bakPageAgent?.toggle) {
@@ -77,7 +66,11 @@ function init() {
   const chatUi = chatLog ? createChatUi({ container: chatLog }) : null;
 
   const agentMessages = createAgentMessages(
-    "System: You are a browser page customization agent. You can edit the page body, but do not modify or remove the element with id '__bak-root'. Make minimal, safe changes and confirm what you changed."
+    "System: You are a Habr article assistant. Only work on habr.com article pages. " +
+      "Use the provided tools to: extract the article as Markdown, rank paragraphs, " +
+      "highlight key paragraphs, and insert a TTS player. " +
+      "Do not modify or remove the element with id '__bak-root'. " +
+      "Avoid arbitrary DOM edits outside the tools."
   );
 
   ensureSkillTag();
@@ -87,12 +80,9 @@ function init() {
   ];
 
   const tools = [
-    jsRunTool(),
-    domSummaryTool(),
-    domSubtreeHtmlTool(),
-    domAppendHtmlTool(),
-    domRemoveTool(),
-    domBindEventTool()
+    articleExtractMdTool(),
+    highlightParagraphsTool(),
+    insertTtsPlayerTool()
   ];
 
   const agentContext = { viewRoot: document.body };
@@ -337,7 +327,7 @@ function init() {
     const skill = document.createElement("script");
     skill.type = "text/markdown";
     skill.id = SKILL_ID;
-    skill.textContent = `---\nname: page.edit\ndescription: Modify the current page safely.\n---\n# Goal\nSafely modify the current page based on the user request.\n\n# Steps\n1) Inspect the relevant DOM using the provided tools.\n2) Make minimal changes to fulfill the request.\n3) Do not modify or remove the element with id '__bak-root'.\n4) Avoid removing forms or scripts unless explicitly asked.\n5) Confirm what changed in a short response.\n\n# Output\n- A short confirmation of changes.`;
+    skill.textContent = `---\nname: habr.article\n---\n# Goal\nWork only on Habr article pages. Extract the article in Markdown, rank paragraphs for importance, highlight key paragraphs, and insert a TTS player.\n\n# Steps\n1) Call articleExtractMd to get title, markdown, and paragraphs.\n2) Ask the model to rank paragraphs and pick the top N.\n3) Call highlightParagraphs with the selected indices.\n4) Call insertTtsPlayer with the markdown to add a Russian TTS player before the first paragraph.\n\n# Rules\n- Do not modify or remove the element with id '__bak-root'.\n- Use only the provided tools for DOM changes.\n- Confirm what changed in a short response.`;
     document.documentElement.appendChild(skill);
   }
 
@@ -366,6 +356,393 @@ function storageSet(data) {
   } catch {
     // ignore
   }
+}
+
+function getHabrArticleRoot() {
+  const article = document.querySelector("article.tm-article-presenter__content");
+  if (!article) {
+    throw new Error("Habr article container not found.");
+  }
+  return article;
+}
+
+function getHabrTitle(article) {
+  const titleEl = article.querySelector("h1.tm-title.tm-title_h1[data-test-id='articleTitle']");
+  const title = titleEl?.textContent?.trim();
+  if (!title) {
+    throw new Error("Habr article title not found.");
+  }
+  return title;
+}
+
+function getHabrParagraphs(article) {
+  return [...article.querySelectorAll("p")]
+    .map((p) => (p.textContent || "").trim())
+    .filter(Boolean);
+}
+
+function extractHabrMarkdown() {
+  const article = getHabrArticleRoot();
+  const title = getHabrTitle(article);
+  const paragraphs = getHabrParagraphs(article);
+  const markdown = [`# ${title}`, "", ...paragraphs.map((p) => `${p}\n`)].join("\n").trim();
+  return { title, markdown, paragraphs };
+}
+
+function ensureHighlightStyle(className) {
+  const styleId = "__bak-highlight-style";
+  if (document.getElementById(styleId)) return;
+  const style = document.createElement("style");
+  style.id = styleId;
+  style.textContent = `
+    .${className} {
+      background: #fff6bf;
+      border-left: 4px solid #f59e0b;
+      padding: 4px 8px;
+      margin-left: -8px;
+      border-radius: 6px;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function ensureTtsStyle() {
+  const styleId = "__bak-tts-style";
+  if (document.getElementById(styleId)) return;
+  const style = document.createElement("style");
+  style.id = styleId;
+  style.textContent = `
+    .bak-tts-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      padding: 12px 14px;
+      margin: 12px 0 18px;
+      background: #ffffff;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+      font-family: "Space Grotesk", "IBM Plex Sans", "Segoe UI", sans-serif;
+    }
+    .bak-tts-title {
+      font-weight: 700;
+      font-size: 0.95rem;
+      margin-bottom: 8px;
+      color: #0f172a;
+    }
+    .bak-tts-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .bak-tts-controls button {
+      background: #0f172a;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 6px 10px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .bak-tts-controls button.secondary {
+      background: #334155;
+    }
+    .bak-tts-controls button.ghost {
+      background: #e2e8f0;
+      color: #0f172a;
+    }
+    .bak-tts-status {
+      font-size: 0.78rem;
+      color: #64748b;
+      margin-top: 6px;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function markdownToText(md) {
+  let text = md || "";
+  text = text.replace(/```[\s\S]*?```/g, "");
+  text = text.replace(/`[^`]*`/g, "");
+  text = text.replace(/^#{1,6}\s+/gm, "");
+  text = text.replace(/^\s*[-*+]\s+/gm, "");
+  text = text.replace(/^\s*\d+\.\s+/gm, "");
+  text = text.replace(/\n{2,}/g, "\n");
+  return text.trim();
+}
+
+function splitSentences(text) {
+  const sentences = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (".!?…".includes(ch) && (!next || /\s/.test(next))) {
+      const sentence = text.slice(start, i + 1).trim();
+      if (sentence) sentences.push(sentence);
+      start = i + 1;
+    }
+  }
+  const tail = text.slice(start).trim();
+  if (tail) sentences.push(tail);
+  return sentences.length ? sentences : [text];
+}
+
+function chunkText(text, maxLen = 2200) {
+  const sentences = splitSentences(text);
+  const chunks = [];
+  let current = "";
+  for (const sentence of sentences) {
+    if ((current + " " + sentence).trim().length <= maxLen) {
+      current = (current + " " + sentence).trim();
+      continue;
+    }
+    if (current) chunks.push(current);
+    if (sentence.length > maxLen) {
+      for (let i = 0; i < sentence.length; i += maxLen) {
+        chunks.push(sentence.slice(i, i + maxLen));
+      }
+      current = "";
+    } else {
+      current = sentence;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function selectVoice(lang) {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window)) {
+      resolve(undefined);
+      return;
+    }
+    const pick = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const byLang = voices.find((v) => v.lang === lang || v.lang?.startsWith(lang));
+      resolve(byLang ?? voices[0]);
+    };
+    const voices = window.speechSynthesis.getVoices();
+    if (voices && voices.length) {
+      pick();
+      return;
+    }
+    const onVoices = () => {
+      window.speechSynthesis.removeEventListener("voiceschanged", onVoices);
+      pick();
+    };
+    window.speechSynthesis.addEventListener("voiceschanged", onVoices);
+    setTimeout(() => {
+      window.speechSynthesis.removeEventListener("voiceschanged", onVoices);
+      pick();
+    }, 1000);
+  });
+}
+
+function articleExtractMdTool() {
+  const inputSchema = {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false
+  };
+  const outputSchema = {
+    type: "object",
+    properties: {
+      title: { type: "string" },
+      markdown: { type: "string" },
+      paragraphs: { type: "array", items: { type: "string" } }
+    },
+    required: ["title", "markdown", "paragraphs"],
+    additionalProperties: false
+  };
+  return new Tool(
+    "articleExtractMd",
+    "Extract the current Habr article into Markdown and return the paragraph list.",
+    async () => {
+      return extractHabrMarkdown();
+    },
+    inputSchema,
+    outputSchema
+  );
+}
+
+function highlightParagraphsTool() {
+  const inputSchema = {
+    type: "object",
+    properties: {
+      indices: { type: "array", items: { type: "number" } },
+      className: { type: "string" }
+    },
+    required: ["indices"],
+    additionalProperties: false
+  };
+  const outputSchema = {
+    type: "object",
+    properties: {
+      ok: { type: "boolean" },
+      highlighted: { type: "number" }
+    },
+    required: ["ok", "highlighted"],
+    additionalProperties: false
+  };
+  return new Tool(
+    "highlightParagraphs",
+    "Highlight Habr article paragraphs by index.",
+    async (args) => {
+      const { indices, className } = args;
+      const article = getHabrArticleRoot();
+      const nodes = [...article.querySelectorAll("p")];
+      const cls = className?.trim() || "bak-highlight";
+      ensureHighlightStyle(cls);
+      let count = 0;
+      for (const idx of indices) {
+        const node = nodes[idx];
+        if (!node) continue;
+        node.classList.add(cls);
+        count += 1;
+      }
+      return { ok: count > 0, highlighted: count };
+    },
+    inputSchema,
+    outputSchema
+  );
+}
+
+function insertTtsPlayerTool() {
+  const inputSchema = {
+    type: "object",
+    properties: {
+      markdown: { type: "string" },
+      lang: { type: "string" }
+    },
+    required: ["markdown"],
+    additionalProperties: false
+  };
+  const outputSchema = {
+    type: "object",
+    properties: {
+      ok: { type: "boolean" }
+    },
+    required: ["ok"],
+    additionalProperties: false
+  };
+  return new Tool(
+    "insertTtsPlayer",
+    "Insert a TTS player for the Habr article before the first paragraph.",
+    async (args) => {
+      const { markdown, lang } = args;
+      const article = getHabrArticleRoot();
+      const firstP = article.querySelector("p");
+      if (!firstP) {
+        throw new Error("No paragraphs found in the Habr article.");
+      }
+      ensureTtsStyle();
+      const existing = document.getElementById("__bak-tts-player");
+      if (existing) existing.remove();
+
+      const container = document.createElement("div");
+      container.id = "__bak-tts-player";
+      container.className = "bak-tts-card";
+
+      const title = document.createElement("div");
+      title.className = "bak-tts-title";
+      title.textContent = "Озвучка статьи";
+
+      const controls = document.createElement("div");
+      controls.className = "bak-tts-controls";
+
+      const playBtn = document.createElement("button");
+      playBtn.textContent = "Play";
+      const pauseBtn = document.createElement("button");
+      pauseBtn.textContent = "Pause";
+      pauseBtn.className = "secondary";
+      const stopBtn = document.createElement("button");
+      stopBtn.textContent = "Stop";
+      stopBtn.className = "ghost";
+      const progress = document.createElement("span");
+      progress.className = "bak-tts-progress";
+      progress.textContent = "0/0";
+
+      const status = document.createElement("div");
+      status.className = "bak-tts-status";
+      status.textContent = "Нажмите Play для озвучки.";
+
+      controls.append(playBtn, pauseBtn, stopBtn, progress);
+      container.append(title, controls, status);
+
+      firstP.parentElement?.insertBefore(container, firstP);
+
+      if (!("speechSynthesis" in window)) {
+        status.textContent = "Speech Synthesis не поддерживается в этом браузере.";
+        return { ok: false };
+      }
+
+      const text = markdownToText(markdown);
+      const chunks = chunkText(text);
+      progress.textContent = `0/${chunks.length}`;
+
+      let currentIndex = 0;
+      let voice;
+      let isPlaying = false;
+
+      const speakNext = async () => {
+        if (currentIndex >= chunks.length) {
+          status.textContent = "Готово.";
+          isPlaying = false;
+          return;
+        }
+        if (!voice) {
+          voice = await selectVoice(lang || "ru-RU");
+        }
+        const utter = new SpeechSynthesisUtterance(chunks[currentIndex]);
+        if (voice) utter.voice = voice;
+        utter.lang = lang || "ru-RU";
+        utter.onend = () => {
+          currentIndex += 1;
+          progress.textContent = `${currentIndex}/${chunks.length}`;
+          if (isPlaying) speakNext();
+        };
+        utter.onerror = () => {
+          status.textContent = "Ошибка озвучки.";
+          isPlaying = false;
+        };
+        window.speechSynthesis.speak(utter);
+      };
+
+      playBtn.addEventListener("click", async () => {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+          status.textContent = "Воспроизведение...";
+          isPlaying = true;
+          return;
+        }
+        if (window.speechSynthesis.speaking) {
+          return;
+        }
+        status.textContent = "Воспроизведение...";
+        isPlaying = true;
+        await speakNext();
+      });
+
+      pauseBtn.addEventListener("click", () => {
+        if (!window.speechSynthesis.speaking) return;
+        window.speechSynthesis.pause();
+        status.textContent = "Пауза.";
+      });
+
+      stopBtn.addEventListener("click", () => {
+        window.speechSynthesis.cancel();
+        currentIndex = 0;
+        progress.textContent = `0/${chunks.length}`;
+        status.textContent = "Остановлено.";
+        isPlaying = false;
+      });
+
+      return { ok: true };
+    },
+    inputSchema,
+    outputSchema
+  );
 }
 
 function getTemplate() {
