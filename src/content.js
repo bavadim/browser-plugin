@@ -97,10 +97,12 @@ function init() {
       applySummaryMode(false);
       return;
     }
+    if (summaryLoading) return;
     if (!summaryGenerated) {
       setSummaryLoading(true);
       await generateSummary();
       summaryGenerated = true;
+      setSummaryLoading(false);
     }
     if (!summaryApplied) {
       setStatus("Не удалось выделить ключевые фразы.");
@@ -117,7 +119,7 @@ function init() {
   function setSummaryLoading(isLoading) {
     summaryLoading = isLoading;
     if (detailSlider) detailSlider.disabled = isLoading;
-    if (detailValue) detailValue.textContent = isLoading ? "..." : `${detailSlider?.value ?? 100}%`;
+    if (detailValue) detailValue.textContent = isLoading ? "Loading..." : `${detailSlider?.value ?? 100}%`;
   }
 
   function loadSettings() {
@@ -219,7 +221,6 @@ function init() {
   ];
 
   async function generateSummary() {
-    let didLoad = false;
     try {
       if (!location?.hostname?.endsWith("habr.com")) return;
       if (!location?.pathname?.includes("/articles/")) return;
@@ -227,10 +228,6 @@ function init() {
       if (!adapter) {
         setStatus("Настройки модели не заполнены. Откройте Settings.");
         return;
-      }
-      if (!summaryLoading) {
-        setSummaryLoading(true);
-        didLoad = true;
       }
       setStatus("Генерирую summary...");
       const prompt =
@@ -291,10 +288,6 @@ function init() {
       setStatus("");
     } catch (error) {
       setStatus(String(error));
-    } finally {
-      if (summaryLoading && (didLoad || !summaryApplied)) {
-        setSummaryLoading(false);
-      }
     }
   }
 
