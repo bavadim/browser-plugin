@@ -105,6 +105,9 @@ function init() {
   detailSlider?.addEventListener("input", async (event) => {
     const value = Number(event.target.value || 100);
     if (detailValue) detailValue.textContent = `${value}%`;
+    if (detailSlider) {
+      detailSlider.style.setProperty("--bak-progress", `${Math.max(0, Math.min(100, value))}%`);
+    }
     if (value >= 100) {
       applySummaryMode(false);
       return;
@@ -134,6 +137,10 @@ function init() {
     summaryLoading = isLoading;
     if (detailSlider) detailSlider.disabled = isLoading;
     if (detailValue) detailValue.textContent = isLoading ? "Loading..." : `${detailSlider?.value ?? 100}%`;
+    if (detailSlider) {
+      const value = Number(detailSlider.value || 100);
+      detailSlider.style.setProperty("--bak-progress", `${Math.max(0, Math.min(100, value))}%`);
+    }
   }
 
   function setTtsState(nextState) {
@@ -733,6 +740,7 @@ function init() {
   if (detailSlider && detailValue) {
     detailSlider.value = "100";
     detailValue.textContent = "100%";
+    detailSlider.style.setProperty("--bak-progress", "100%");
   }
   currentPercent = 100;
   setTtsState("idle");
@@ -916,6 +924,46 @@ function getStyles() {
     }
     .bak-detail {
       flex: 1;
+      height: 3px;
+      --bak-progress: 100%;
+      -webkit-appearance: none;
+      appearance: none;
+      background: transparent;
+    }
+    .bak-detail::-webkit-slider-runnable-track {
+      height: 3px;
+      border-radius: 999px;
+      background: linear-gradient(
+        to right,
+        #0f172a var(--bak-progress),
+        #cbd5f5 var(--bak-progress)
+      );
+    }
+    .bak-detail::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #0f172a;
+      border: none;
+      margin-top: -1.5px;
+    }
+    .bak-detail::-moz-range-track {
+      height: 3px;
+      border-radius: 999px;
+      background: #cbd5f5;
+    }
+    .bak-detail::-moz-range-progress {
+      height: 3px;
+      border-radius: 999px;
+      background: #0f172a;
+    }
+    .bak-detail::-moz-range-thumb {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #0f172a;
+      border: none;
     }
     .bak-detail-value {
       min-width: 44px;
@@ -1017,6 +1065,25 @@ function getStyles() {
       }
       .bak-slider {
         color: rgba(226, 232, 240, 0.75);
+      }
+      .bak-detail::-webkit-slider-runnable-track {
+        background: linear-gradient(
+          to right,
+          #e2e8f0 var(--bak-progress),
+          rgba(226, 232, 240, 0.25) var(--bak-progress)
+        );
+      }
+      .bak-detail::-webkit-slider-thumb {
+        background: #e2e8f0;
+      }
+      .bak-detail::-moz-range-track {
+        background: rgba(226, 232, 240, 0.25);
+      }
+      .bak-detail::-moz-range-progress {
+        background: #e2e8f0;
+      }
+      .bak-detail::-moz-range-thumb {
+        background: #e2e8f0;
       }
       .bak-tts-row {
         background: rgba(15, 23, 42, 0.6);
