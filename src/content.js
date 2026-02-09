@@ -32,7 +32,9 @@ function init() {
   const root = document.createElement("div");
   root.id = ROOT_ID;
   root.style.all = "initial";
-  root.style.position = "relative";
+  root.style.position = "fixed";
+  root.style.left = "16px";
+  root.style.top = "16px";
   root.style.zIndex = "2147483647";
 
   const shadow = root.attachShadow({ mode: "open" });
@@ -48,17 +50,8 @@ function init() {
   ensureSummaryStyle();
 
   const mountRoot = () => {
-    const currentStats = article.querySelector("div.stats");
-    if (currentStats) {
-      currentStats.appendChild(root);
-      return true;
-    }
-    const h1 = article.querySelector("h1.tm-title.tm-title_h1[data-test-id='articleTitle']");
-    if (h1?.parentElement) {
-      h1.parentElement.insertBefore(root, h1.nextSibling);
-      return true;
-    }
-    article.prepend(root);
+    const pageRoot = document.querySelector("div.tm-page") || document.body;
+    pageRoot.appendChild(root);
     return true;
   };
 
@@ -76,7 +69,6 @@ function init() {
   });
   observer.observe(article, { childList: true, subtree: true });
 
-  const settingsBtn = shadow.querySelector(".bak-settings-btn");
   const detailSlider = shadow.querySelector(".bak-detail");
   const detailValue = shadow.querySelector(".bak-detail-value");
   const statusEl = shadow.querySelector(".bak-status");
@@ -89,10 +81,6 @@ function init() {
   );
 
   const agentContext = { viewRoot: document.body };
-
-  settingsBtn?.addEventListener("click", () => {
-    api?.runtime?.openOptionsPage?.();
-  });
 
   let summaryGenerated = false;
   let summaryActive = false;
@@ -113,7 +101,6 @@ function init() {
       setSummaryLoading(true);
       await generateSummary();
       summaryGenerated = true;
-      setSummaryLoading(false);
     }
     if (!summaryApplied) {
       setStatus("Не удалось выделить ключевые фразы.");
@@ -232,6 +219,7 @@ function init() {
   ];
 
   async function generateSummary() {
+    let didLoad = false;
     try {
       if (!location?.hostname?.endsWith("habr.com")) return;
       if (!location?.pathname?.includes("/articles/")) return;
@@ -239,6 +227,10 @@ function init() {
       if (!adapter) {
         setStatus("Настройки модели не заполнены. Откройте Settings.");
         return;
+      }
+      if (!summaryLoading) {
+        setSummaryLoading(true);
+        didLoad = true;
       }
       setStatus("Генерирую summary...");
       const prompt =
@@ -299,6 +291,10 @@ function init() {
       setStatus("");
     } catch (error) {
       setStatus(String(error));
+    } finally {
+      if (summaryLoading && (didLoad || !summaryApplied)) {
+        setSummaryLoading(false);
+      }
     }
   }
 
@@ -506,9 +502,7 @@ function getTemplate() {
       <div class="bak-header">
         <div>
           <div class="bak-title">Habr Summary</div>
-          <div class="bak-subtitle">Скорочтение</div>
         </div>
-        <button class="bak-settings-btn" title="Settings">⚙</button>
       </div>
       <div class="bak-slider">
         <label>Detail</label>
@@ -555,18 +549,6 @@ function getStyles() {
     .bak-subtitle {
       font-size: 0.78rem;
       color: #64748b;
-    }
-    .bak-settings-btn {
-      border: none;
-      background: #e2e8f0;
-      border-radius: 10px;
-      width: 28px;
-      height: 28px;
-      font-size: 1.1rem;
-      cursor: pointer;
-    }
-    .bak-settings-btn {
-      font-size: 0.95rem;
     }
     .bak-status {
       font-size: 0.75rem;
