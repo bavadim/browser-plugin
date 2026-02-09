@@ -72,6 +72,10 @@ function init() {
   const detailSlider = shadow.querySelector(".bak-detail");
   const detailValue = shadow.querySelector(".bak-detail-value");
   const statusEl = shadow.querySelector(".bak-status");
+  const ttsPlayButton = shadow.querySelector(".bak-tts-play");
+  const ttsStopButton = shadow.querySelector(".bak-tts-stop");
+  const ttsProgress = shadow.querySelector(".bak-tts-progress");
+  const ttsTime = shadow.querySelector(".bak-tts-time");
 
   const agentMessages = createAgentMessages(
     "System: You are a Habr article summarizer. Only work on habr.com article pages. " +
@@ -87,6 +91,16 @@ function init() {
   let summaryLoading = false;
   let summaryApplied = false;
   let currentPercent = 100;
+  let ttsState = "idle";
+  let ttsAudio = null;
+  let ttsAudioUrl = null;
+  let ttsCleanText = null;
+  let ttsHref = location.href;
+
+  const TTS_MODEL = "gpt-4o-mini-tts";
+  const TTS_VOICE = "alloy";
+  const MAX_TTS_CHARS = 3500;
+  const MAX_HTML_CHARS = 20000;
   const originalHtml = new Map();
   const summaryHtml = new Map();
 
@@ -123,6 +137,288 @@ function init() {
     if (detailSlider) detailSlider.disabled = isLoading;
     if (detailValue) detailValue.textContent = isLoading ? "Loading..." : `${detailSlider?.value ?? 100}%`;
   }
+
+  function setTtsState(nextState) {
+    ttsState = nextState;
+    if (!ttsPlayButton) return;
+    if (ttsState === "loading") {
+      ttsPlayButton.disabled = true;
+      ttsPlayButton.textContent = "Loading...";
+      if (ttsStopButton) ttsStopButton.disabled = true;
+      return;
+    }
+    ttsPlayButton.disabled = false;
+    ttsPlayButton.textContent = ttsState === "playing" ? "Pause" : "Play";
+    if (ttsStopButton) ttsStopButton.disabled = ttsState === "idle";
+  }
+
+  function resetTtsAudioUrl() {
+    if (ttsAudioUrl) {
+      URL.revokeObjectURL(ttsAudioUrl);
+    }
+    ttsAudioUrl = null;
+    if (ttsAudio) {
+      ttsAudio.pause();
+      ttsAudio.src = "";
+    }
+  }
+
+  function ensureTtsAudio() {
+    if (ttsAudio) return;
+    ttsAudio = new Audio();
+    ttsAudio.preload = "auto";
+    ttsAudio.addEventListener("ended", () => {
+      if (ttsAudio) {
+        ttsAudio.currentTime = 0;
+      }
+      setTtsState("paused");
+      updateTtsProgress();
+    });
+    ttsAudio.addEventListener("timeupdate", updateTtsProgress);
+    ttsAudio.addEventListener("loadedmetadata", updateTtsProgress);
+  }
+
+  function sanitizeCleanText(text) {
+    return String(text || "")
+      .replace(/https?:\/\/\S+/gi, "")
+      .replace(/\s+$/gm, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function extractHabrHtml() {
+    const article = getHabrArticleRoot();
+    const clone = article.cloneNode(true);
+    clone.querySelectorAll("script,style,nav,aside,footer,form,button,svg").forEach((node) => node.remove());
+    clone.querySelectorAll("a").forEach((anchor) => {
+      const text = document.createTextNode(anchor.textContent || "");
+      anchor.replaceWith(text);
+    });
+    return clone.innerHTML;
+  }
+
+  function splitTextIntoChunks(text, maxChars) {
+    const normalized = String(text || "").trim();
+    if (!normalized) return [];
+    const sentences = normalized.split(/(?<=[.!?])\s+/);
+    const chunks = [];
+    let current = "";
+    for (const sentence of sentences) {
+      if (!sentence) continue;
+      if ((current + " " + sentence).trim().length > maxChars && current) {
+        chunks.push(current.trim());
+        current = sentence;
+      } else {
+        current = `${current} ${sentence}`.trim();
+      }
+    }
+    if (current) chunks.push(current.trim());
+    return chunks;
+  }
+
+  function formatTime(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+    const total = Math.floor(seconds);
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    return `${mins}:${String(secs).padStart(2, "0")}`;
+  }
+
+  function updateTtsProgress() {
+    if (!ttsAudio) return;
+    const current = Number.isFinite(ttsAudio.currentTime) ? ttsAudio.currentTime : 0;
+    const duration = Number.isFinite(ttsAudio.duration) ? ttsAudio.duration : 0;
+    if (ttsProgress) {
+      const max = duration > 0 ? duration : 1;
+      ttsProgress.max = String(max);
+      ttsProgress.value = String(Math.min(current, max));
+    }
+    if (ttsTime) {
+      ttsTime.textContent = `${formatTime(current)} / ${formatTime(duration)}`;
+    }
+  }
+
+  if (ttsProgress) {
+    ttsProgress.addEventListener("input", () => {
+      if (!ttsAudio) return;
+      const next = Number(ttsProgress.value || "0");
+      if (Number.isFinite(next)) {
+        ttsAudio.currentTime = next;
+        updateTtsProgress();
+      }
+    });
+  }
+
+  async function createResponseText(prompt, model, baseURL, apiKey) {
+    const url = `${String(baseURL || "").replace(/\/+$/, "")}/responses`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({ model, input: prompt })
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`LLM error: ${response.status} ${errText}`);
+    }
+    const data = await response.json();
+    if (data && typeof data.output_text === "string") {
+      return data.output_text;
+    }
+    const output = Array.isArray(data?.output) ? data.output : [];
+    const chunks = [];
+    for (const item of output) {
+      const content = Array.isArray(item?.content) ? item.content : [];
+      for (const part of content) {
+        if (typeof part?.text === "string") {
+          chunks.push(part.text);
+        }
+      }
+    }
+    return chunks.join("").trim();
+  }
+
+  async function getCleanArticleText() {
+    if (ttsCleanText && ttsHref === location.href) {
+      return ttsCleanText;
+    }
+    const settings = await loadSettings();
+    const baseURL = settings?.baseUrl?.trim() || DEFAULT_BASE_URL;
+    const apiKey = settings?.apiKey?.trim() || "";
+    const model = settings?.model?.trim() || DEFAULT_MODEL;
+    if (!apiKey) {
+      setStatus("Настройки модели не заполнены. Откройте Settings.");
+      return null;
+    }
+    const rawHtml = extractHabrHtml();
+    let source = rawHtml;
+    let sourceType = "HTML";
+    if (rawHtml.length > MAX_HTML_CHARS) {
+      const { markdown } = extractHabrMarkdown();
+      source = markdown;
+      sourceType = "Markdown";
+    }
+    const prompt =
+      "Ты редактор, готовишь текст для озвучки. " +
+      "Нельзя выводить HTML, только чистый текст. " +
+      "Нельзя оставлять ссылки, URL, якоря, email, соц-хендлы. " +
+      "Нельзя добавлять факты или придумывать текст.\n\n" +
+      "Задача: переписать материал в чистый связный текст для озвучки.\n" +
+      "Требования:\n" +
+      "1) Удали навигацию, меню, “читать далее”, кнопки, хлебные крошки, рекламные блоки, “Related/Читайте также”.\n" +
+      "2) Удали все URL и якоря, вместо них оставь обычный текст без ссылок.\n" +
+      "3) Убери мусорные элементы (повторы, обрывки фраз, списки ссылок, подписи кнопок).\n" +
+      "4) Сохрани структуру: заголовки и абзацы, списки, но без HTML.\n" +
+      "5) Сохрани порядок и смысл, не добавляй ничего от себя.\n" +
+      "Формат: чистый текст. Каждый абзац с новой строки.\n\n" +
+      `Источник (${sourceType}):\n` +
+      "```\n" +
+      source +
+      "\n```";
+    const cleaned = sanitizeCleanText(await createResponseText(prompt, model, baseURL, apiKey));
+    if (!cleaned) {
+      throw new Error("LLM вернул пустой текст.");
+    }
+    ttsCleanText = cleaned;
+    ttsHref = location.href;
+    return cleaned;
+  }
+
+  async function generateTtsAudio(text) {
+    const settings = await loadSettings();
+    const baseURL = settings?.baseUrl?.trim() || DEFAULT_BASE_URL;
+    const apiKey = settings?.apiKey?.trim() || "";
+    if (!apiKey) {
+      setStatus("Настройки модели не заполнены. Откройте Settings.");
+      return null;
+    }
+    const chunks = splitTextIntoChunks(text, MAX_TTS_CHARS);
+    if (!chunks.length) {
+      throw new Error("Нет текста для озвучки.");
+    }
+    const blobs = [];
+    for (let i = 0; i < chunks.length; i += 1) {
+      setStatus(`Генерирую озвучку ${i + 1}/${chunks.length}...`);
+      const url = `${String(baseURL || "").replace(/\/+$/, "")}/audio/speech`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: TTS_MODEL,
+          voice: TTS_VOICE,
+          input: chunks[i],
+          response_format: "mp3"
+        })
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`TTS error: ${response.status} ${errText}`);
+      }
+      const buffer = await response.arrayBuffer();
+      blobs.push(new Blob([buffer], { type: "audio/mpeg" }));
+    }
+    const blob = new Blob(blobs, { type: "audio/mpeg" });
+    return URL.createObjectURL(blob);
+  }
+
+  ttsPlayButton?.addEventListener("click", async () => {
+    try {
+      if (ttsState === "loading") return;
+      ensureTtsAudio();
+      if (!ttsAudio) return;
+      if (ttsHref !== location.href) {
+        ttsCleanText = null;
+        ttsHref = location.href;
+        resetTtsAudioUrl();
+      }
+      if (ttsState === "playing") {
+        ttsAudio.pause();
+        setTtsState("paused");
+        updateTtsProgress();
+        return;
+      }
+      if (ttsAudioUrl) {
+        await ttsAudio.play();
+        setTtsState("playing");
+        return;
+      }
+      setTtsState("loading");
+      setStatus("Готовлю текст для озвучки...");
+      const text = await getCleanArticleText();
+      if (!text) {
+        setTtsState("idle");
+        return;
+      }
+      const audioUrl = await generateTtsAudio(text);
+      if (!audioUrl) {
+        setTtsState("idle");
+        return;
+      }
+      resetTtsAudioUrl();
+      ttsAudioUrl = audioUrl;
+      ttsAudio.src = audioUrl;
+      await ttsAudio.play();
+      setTtsState("playing");
+      updateTtsProgress();
+      setStatus("");
+    } catch (error) {
+      setTtsState("idle");
+      setStatus(String(error));
+    }
+  });
+
+  ttsStopButton?.addEventListener("click", () => {
+    if (!ttsAudio) return;
+    ttsAudio.pause();
+    ttsAudio.currentTime = 0;
+    setTtsState("paused");
+    updateTtsProgress();
+  });
 
   function loadSettings() {
     return new Promise((resolve) => {
@@ -448,6 +744,8 @@ function init() {
     detailValue.textContent = "100%";
   }
   currentPercent = 100;
+  setTtsState("idle");
+  updateTtsProgress();
 }
 
 function storageGet(keys, cb) {
@@ -563,6 +861,15 @@ function getTemplate() {
         <input class="bak-detail" type="range" min="0" max="100" step="10" value="100" />
         <span class="bak-detail-value">100%</span>
       </div>
+      <div class="bak-tts">
+        <button class="bak-tts-play" type="button">Play</button>
+        <button class="bak-tts-stop" type="button">Stop</button>
+        <span class="bak-tts-label">AI-озвучка</span>
+      </div>
+      <div class="bak-tts-progress-row">
+        <input class="bak-tts-progress" type="range" min="0" max="1" step="0.1" value="0" />
+        <span class="bak-tts-time">0:00 / 0:00</span>
+      </div>
       <div class="bak-status"></div>
     </div>
   `;
@@ -626,6 +933,71 @@ function getStyles() {
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
+    .bak-tts {
+      display: flex;
+      justify-content: flex-start;
+      align-items: center;
+      gap: 8px;
+    }
+    .bak-tts-play {
+      appearance: none;
+      border: 1px solid #e2e8f0;
+      background: #f8fafc;
+      color: #0f172a;
+      font-weight: 600;
+      font-size: 0.8rem;
+      padding: 6px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    .bak-tts-play:hover {
+      background: #e2e8f0;
+    }
+    .bak-tts-play:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+    .bak-tts-stop {
+      appearance: none;
+      border: 1px solid #e2e8f0;
+      background: #ffffff;
+      color: #0f172a;
+      font-weight: 600;
+      font-size: 0.8rem;
+      padding: 6px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    .bak-tts-stop:hover {
+      background: #e2e8f0;
+    }
+    .bak-tts-stop:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+    .bak-tts-label {
+      font-size: 0.72rem;
+      color: #64748b;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    .bak-tts-progress-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .bak-tts-progress {
+      flex: 1;
+      height: 4px;
+      accent-color: #0f172a;
+    }
+    .bak-tts-time {
+      min-width: 84px;
+      text-align: right;
+      font-size: 0.75rem;
+      color: #64748b;
+      font-variant-numeric: tabular-nums;
+    }
     @media (prefers-color-scheme: dark) {
       .bak-card {
         background: #0f172a;
@@ -634,6 +1006,31 @@ function getStyles() {
       }
       .bak-slider {
         color: rgba(226, 232, 240, 0.75);
+      }
+      .bak-tts-play {
+        background: #111827;
+        border-color: rgba(226, 232, 240, 0.16);
+        color: #e2e8f0;
+      }
+      .bak-tts-play:hover {
+        background: #1f2937;
+      }
+      .bak-tts-stop {
+        background: #0b1220;
+        border-color: rgba(226, 232, 240, 0.16);
+        color: #e2e8f0;
+      }
+      .bak-tts-stop:hover {
+        background: #1f2937;
+      }
+      .bak-tts-label {
+        color: rgba(226, 232, 240, 0.6);
+      }
+      .bak-tts-progress {
+        accent-color: #e2e8f0;
+      }
+      .bak-tts-time {
+        color: rgba(226, 232, 240, 0.6);
       }
     }
   `;
