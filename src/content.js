@@ -75,9 +75,9 @@ function init() {
 
   const agentMessages = createAgentMessages(
     "System: You are a Habr article summarizer. Only work on habr.com article pages. " +
-      "Use the provided tools to extract article text and apply summary markup. " +
-      "For each paragraph, return HTML with <strong> around the key phrases (2-6 words each). " +
-      "Do not add any other tags. Do not modify or remove the element with id '__bak-root'."
+      "You will be given article paragraphs and a target percent of words to emphasize. " +
+      "Return ranked segments for each paragraph by calling the rankSegments tool. " +
+      "Do not modify or remove the element with id '__bak-root'."
   );
 
   const agentContext = { viewRoot: document.body };
@@ -100,6 +100,8 @@ function init() {
     if (summaryLoading) return;
     if (!summaryGenerated) {
       setSummaryLoading(true);
+      summaryApplied = false;
+      summaryHtml.clear();
       await generateSummary();
       summaryGenerated = true;
       setSummaryLoading(false);
@@ -150,7 +152,26 @@ function init() {
     });
   }
 
-  function applySummarySegmentsTool() {
+  let rankedItems = null;
+
+  function applySummarySegments(items) {
+    const nodes = [...article.querySelectorAll("p")];
+    storeOriginal(nodes);
+    let applied = 0;
+    for (const item of items || []) {
+      const idx = item.index;
+      const node = nodes[idx];
+      if (!node) continue;
+      const html = buildSegmentsHtml(item.segments || []);
+      summaryHtml.set(idx, html);
+      node.innerHTML = html;
+      applied += 1;
+    }
+    summaryApplied = applied > 0;
+    return applied;
+  }
+
+  function rankSegmentsTool() {
     const inputSchema = {
       type: "object",
       properties: {
@@ -184,31 +205,17 @@ function init() {
     const outputSchema = {
       type: "object",
       properties: {
-        ok: { type: "boolean" },
-        applied: { type: "number" }
+        ok: { type: "boolean" }
       },
-      required: ["ok", "applied"],
+      required: ["ok"],
       additionalProperties: false
     };
     return new Tool(
-      "applySummarySegments",
-      "Apply summary segments with rank for heatmap rendering.",
+      "rankSegments",
+      "Return ranked segments for each paragraph.",
       async (args) => {
-        const { items } = args;
-        const nodes = [...article.querySelectorAll("p")];
-        storeOriginal(nodes);
-        let applied = 0;
-        for (const item of items || []) {
-          const idx = item.index;
-          const node = nodes[idx];
-          if (!node) continue;
-          const html = buildSegmentsHtml(item.segments || []);
-          summaryHtml.set(idx, html);
-          node.innerHTML = html;
-          applied += 1;
-        }
-        summaryApplied = applied > 0;
-        return { ok: applied > 0, applied };
+        rankedItems = args?.items ?? null;
+        return { ok: true };
       },
       inputSchema,
       outputSchema
@@ -216,8 +223,7 @@ function init() {
   }
 
   const tools = [
-    articleExtractMdTool(),
-    applySummarySegmentsTool()
+    rankSegmentsTool()
   ];
 
   async function generateSummary() {
@@ -230,15 +236,19 @@ function init() {
         return;
       }
       setStatus("Генерирую summary...");
+      const { paragraphs } = extractHabrMarkdown();
+      rankedItems = null;
       const prompt =
-        "Ты на странице статьи Habr. " +
-        "Сначала вызови articleExtractMd. " +
-        "Далее для каждого абзаца разбей текст на фразы и задай каждой фразе rank 0..9. " +
+        "Тебе переданы абзацы статьи Habr. " +
+        "Процент яркого текста: " + String(currentPercent) + "%. " +
+        "Для каждого абзаца разбей текст на фразы и задай каждой фразе rank 0..9. " +
         "По умолчанию всем фразам ставь rank 1-2, потом поднимай rank только важным фразам. " +
         "Rank 9 — главная мысль (не более 10% слов абзаца), 7-8 — ключевые факты, 4-6 — важные детали, 1-3 — связки, 0 — шум. " +
         "Суммарно rank 9 должен покрывать <=10% слов абзаца, rank 8 <=15%, rank 7 <=20%. " +
         "Сегменты должны полностью покрывать исходный абзац, в исходном порядке. " +
-        "Вызови applySummarySegments с массивом items=[{index, segments:[{rank, text}]}] для всех абзацев.";
+        "Вызови rankSegments с массивом items=[{index, segments:[{rank, text}]}] для всех абзацев.\n\n" +
+        "Абзацы:\n" +
+        paragraphs.map((p, i) => `[#${i}] ${p}`).join("\n");
       let thinkingSummary = "";
       for await (const ev of withStatus(
         runAgent(
@@ -283,6 +293,9 @@ function init() {
         if (event.type === "thinking") {
           thinkingSummary = event.summary;
         }
+      }
+      if (rankedItems) {
+        applySummarySegments(rankedItems);
       }
       if (!summaryApplied) {
         setStatus("Summary не применен. Проверьте ключ и модель.");
