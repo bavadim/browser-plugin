@@ -302,9 +302,9 @@ function init() {
       const prompt =
         "Ты на странице статьи Habr. Выдели 5 самых важных абзацев и вставь плеер озвучки. " +
         "Сначала вызови articleExtractMd, затем выбери важные абзацы. " +
-        "Для каждого важного абзаца верни 3-6 ключевых слов/фраз. " +
+        "Для каждого важного абзаца верни 3-5 главных фраз (2-6 слов). " +
         "Вызови highlightKeywords с parameters: indices, className='bak-highlight', " +
-        "keywords=[{index, words:[...]}]. Этот инструмент подсветит ключевые слова " +
+        "keywords=[{index, phrases:[...]}]. Этот инструмент подсветит главные фразы " +
         "и свернет все неважные абзацы/картинки. " +
         "После этого вызови insertTtsPlayer с markdown статьи и lang='ru-RU'.";
       let thinkingSummary = "";
@@ -383,7 +383,7 @@ function init() {
     const skill = document.createElement("script");
     skill.type = "text/markdown";
     skill.id = SKILL_ID;
-    skill.textContent = `---\nname: habr.article\n---\n# Goal\nWork only on Habr article pages. Extract the article in Markdown, rank paragraphs for importance, highlight key paragraphs with keywords, collapse unimportant blocks, and insert a TTS player.\n\n# Steps\n1) Call articleExtractMd to get title, markdown, and paragraphs.\n2) Ask the model to rank paragraphs and pick the top N.\n3) For each important paragraph, pick 3-6 keywords/phrases.\n4) Call highlightKeywords with indices, className, and keywords.\n5) Call insertTtsPlayer with the markdown to add a Russian TTS player before the first paragraph.\n\n# Rules\n- Do not modify or remove the element with id '__bak-root'.\n- Use only the provided tools for DOM changes.\n- Confirm what changed in a short response.`;
+    skill.textContent = `---\nname: habr.article\n---\n# Goal\nWork only on Habr article pages. Extract the article in Markdown, rank paragraphs for importance, highlight key paragraphs with main phrases, collapse unimportant blocks, and insert a TTS player.\n\n# Steps\n1) Call articleExtractMd to get title, markdown, and paragraphs.\n2) Ask the model to rank paragraphs and pick the top N.\n3) For each important paragraph, pick 3-5 main phrases (2-6 words).\n4) Call highlightKeywords with indices, className, and keywords.\n5) Call insertTtsPlayer with the markdown to add a Russian TTS player before the first paragraph.\n\n# Rules\n- Do not modify or remove the element with id '__bak-root'.\n- Use only the provided tools for DOM changes.\n- Confirm what changed in a short response.`;
     document.documentElement.appendChild(skill);
   }
 
@@ -473,8 +473,8 @@ function extractHabrMarkdown() {
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
-    .bak-collapsed.bak-hidden {
-      display: none;
+    .bak-hidden {
+      display: none !important;
     }
     .bak-collapse-toggle {
       display: inline-flex;
@@ -513,6 +513,7 @@ function extractHabrMarkdown() {
     const normalized = words
       .map((w) => String(w || "").trim())
       .filter(Boolean)
+      .sort((a, b) => b.length - a.length)
       .map((w) => escapeRegExp(w));
     if (!normalized.length) return;
     const regex = new RegExp(`(${normalized.join("|")})`, "gi");
@@ -717,9 +718,9 @@ function articleExtractMdTool() {
             type: "object",
             properties: {
               index: { type: "number" },
-              words: { type: "array", items: { type: "string" } }
+              phrases: { type: "array", items: { type: "string" } }
             },
-            required: ["index", "words"],
+            required: ["index", "phrases"],
             additionalProperties: false
           }
         }
@@ -749,7 +750,7 @@ function articleExtractMdTool() {
         const important = new Set(indices || []);
         const keywordMap = new Map();
         for (const item of keywords || []) {
-          keywordMap.set(item.index, item.words || []);
+          keywordMap.set(item.index, item.phrases || []);
         }
         let count = 0;
         let collapsed = 0;
@@ -764,11 +765,11 @@ function articleExtractMdTool() {
           toggle.addEventListener("click", () => {
             expanded = !expanded;
             for (const el of group) {
-              el.classList.toggle("bak-hidden", !expanded);
-              if (!expanded) {
-                el.classList.add("bak-collapsed");
+              const hide = el.dataset.bakHide === "1";
+              if (hide) {
+                el.classList.toggle("bak-hidden", !expanded);
               } else {
-                el.classList.remove("bak-collapsed");
+                el.classList.toggle("bak-collapsed", !expanded);
               }
             }
             toggle.textContent = expanded ? "Скрыть" : "Показать скрытое";
@@ -778,10 +779,16 @@ function articleExtractMdTool() {
           collapsedGroup.length = 0;
         };
 
-        const addToGroup = (el) => {
+        const addToGroup = (el, { hide } = { hide: false }) => {
           if (!el) return;
-          if (el.classList.contains("bak-hidden")) return;
-          el.classList.add("bak-collapsed", "bak-hidden");
+          if (hide) {
+            if (el.classList.contains("bak-hidden")) return;
+            el.classList.add("bak-hidden");
+            el.dataset.bakHide = "1";
+          } else {
+            el.classList.add("bak-collapsed");
+            el.dataset.bakHide = "0";
+          }
           collapsedGroup.push(el);
           collapsed += 1;
         };
@@ -799,12 +806,12 @@ function articleExtractMdTool() {
 
           const prev = node.previousElementSibling;
           if (prev && (prev.tagName === "FIGURE" || prev.tagName === "IMG")) {
-            addToGroup(prev);
+            addToGroup(prev, { hide: true });
           }
-          addToGroup(node);
+          addToGroup(node, { hide: false });
           const next = node.nextElementSibling;
           if (next && (next.tagName === "FIGURE" || next.tagName === "IMG")) {
-            addToGroup(next);
+            addToGroup(next, { hide: true });
           }
         }
         flushGroup();
