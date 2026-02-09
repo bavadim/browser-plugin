@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
 import { constants } from "node:fs";
+import { access, mkdir } from "node:fs/promises";
 import { platform } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +9,7 @@ const URL =
   "https://habr.com/ru/companies/timeweb/articles/985158/?utm_source=telegram_habr&utm_medium=social&utm_campaign=28319121";
 
 const DIST_MANIFEST = join(process.cwd(), "dist", "manifest.json");
+const PROFILE_DIR = join(process.cwd(), ".chrome-dev-profile");
 
 const vite = spawn("npm", ["run", "build", "--", "--watch"], {
   stdio: "inherit",
@@ -52,12 +53,17 @@ function findChromeExecutable() {
 
 async function launchChrome() {
   await waitForDist();
+  await mkdir(PROFILE_DIR, { recursive: true });
   const chromePath = findChromeExecutable();
 
   chrome = spawn(
     chromePath,
     [
+      `--user-data-dir=${PROFILE_DIR}`,
+      `--disable-extensions-except=${join(process.cwd(), "dist")}`,
       `--load-extension=${join(process.cwd(), "dist")}`,
+      "--no-first-run",
+      "--no-default-browser-check",
       "--new-window",
       URL
     ],

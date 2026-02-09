@@ -8,12 +8,12 @@ import {
   domRemoveTool,
   domSubtreeHtmlTool,
   domSummaryTool,
-  jsInterpreterTool,
   jsRunTool,
   Skill,
   withStatus
 } from "browseragentkit";
 import { createChatUi } from "browseragentkit/ui";
+import $ from "jquery";
 
 const ROOT_ID = "__bak-root";
 const SKILL_ID = "bak-skill-page-edit";
@@ -24,6 +24,11 @@ const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-5.1-codex-mini";
 
 const api = globalThis.chrome ?? globalThis.browser;
+
+if (globalThis) {
+  globalThis.$ = $;
+  globalThis.jQuery = $;
+}
 
 const existingRoot = document.getElementById(ROOT_ID);
 if (existingRoot && globalThis.__bakPageAgent?.toggle) {
@@ -82,7 +87,6 @@ function init() {
   ];
 
   const tools = [
-    jsInterpreterTool(),
     jsRunTool(),
     domSummaryTool(),
     domSubtreeHtmlTool(),
