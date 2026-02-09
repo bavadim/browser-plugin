@@ -76,7 +76,7 @@ function init() {
 
   const tools = [
     articleExtractMdTool(),
-    highlightParagraphsTool(),
+    highlightKeywordsTool(),
     insertTtsPlayerTool()
   ];
 
@@ -301,9 +301,12 @@ function init() {
       addAssistantMessage("Авто-режим: выделяю ключевые абзацы и добавляю озвучку.");
       const prompt =
         "Ты на странице статьи Habr. Выдели 5 самых важных абзацев и вставь плеер озвучки. " +
-        "Сначала вызови articleExtractMd, затем выбери важные абзацы, вызови highlightParagraphs " +
-        "с параметрами indices и className='bak-highlight', после этого вызови insertTtsPlayer " +
-        "с markdown статьи и lang='ru-RU'.";
+        "Сначала вызови articleExtractMd, затем выбери важные абзацы. " +
+        "Для каждого важного абзаца верни 3-6 ключевых слов/фраз. " +
+        "Вызови highlightKeywords с parameters: indices, className='bak-highlight', " +
+        "keywords=[{index, words:[...]}]. Этот инструмент подсветит ключевые слова " +
+        "и свернет все неважные абзацы/картинки. " +
+        "После этого вызови insertTtsPlayer с markdown статьи и lang='ru-RU'.";
       let thinkingSummary = "";
       for await (const ev of withStatus(
         runAgent(
@@ -380,7 +383,7 @@ function init() {
     const skill = document.createElement("script");
     skill.type = "text/markdown";
     skill.id = SKILL_ID;
-    skill.textContent = `---\nname: habr.article\n---\n# Goal\nWork only on Habr article pages. Extract the article in Markdown, rank paragraphs for importance, highlight key paragraphs, and insert a TTS player.\n\n# Steps\n1) Call articleExtractMd to get title, markdown, and paragraphs.\n2) Ask the model to rank paragraphs and pick the top N.\n3) Call highlightParagraphs with the selected indices.\n4) Call insertTtsPlayer with the markdown to add a Russian TTS player before the first paragraph.\n\n# Rules\n- Do not modify or remove the element with id '__bak-root'.\n- Use only the provided tools for DOM changes.\n- Confirm what changed in a short response.`;
+    skill.textContent = `---\nname: habr.article\n---\n# Goal\nWork only on Habr article pages. Extract the article in Markdown, rank paragraphs for importance, highlight key paragraphs with keywords, collapse unimportant blocks, and insert a TTS player.\n\n# Steps\n1) Call articleExtractMd to get title, markdown, and paragraphs.\n2) Ask the model to rank paragraphs and pick the top N.\n3) For each important paragraph, pick 3-6 keywords/phrases.\n4) Call highlightKeywords with indices, className, and keywords.\n5) Call insertTtsPlayer with the markdown to add a Russian TTS player before the first paragraph.\n\n# Rules\n- Do not modify or remove the element with id '__bak-root'.\n- Use only the provided tools for DOM changes.\n- Confirm what changed in a short response.`;
     document.documentElement.appendChild(skill);
   }
 
@@ -444,12 +447,12 @@ function extractHabrMarkdown() {
   return { title, markdown, paragraphs };
 }
 
-function ensureHighlightStyle(className) {
-  const styleId = "__bak-highlight-style";
-  if (document.getElementById(styleId)) return;
-  const style = document.createElement("style");
-  style.id = styleId;
-  style.textContent = `
+  function ensureHighlightStyle(className) {
+    const styleId = "__bak-highlight-style";
+    if (document.getElementById(styleId)) return;
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
     .${className} {
       background: #fff6bf;
       border-left: 4px solid #f59e0b;
@@ -457,9 +460,78 @@ function ensureHighlightStyle(className) {
       margin-left: -8px;
       border-radius: 6px;
     }
-  `;
-  document.head.appendChild(style);
-}
+    .bak-kw {
+      background: #fde68a;
+      padding: 0 2px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .bak-collapsed {
+      display: -webkit-box;
+      -webkit-line-clamp: 1;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .bak-collapsed.bak-hidden {
+      display: none;
+    }
+    .bak-collapse-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.78rem;
+      color: #0f172a;
+      background: #e2e8f0;
+      border: none;
+      border-radius: 999px;
+      padding: 4px 10px;
+      margin: 6px 0;
+      cursor: pointer;
+    }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function escapeRegExp(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function highlightKeywordsInElement(element, words) {
+    if (!element || !words || words.length === 0) return;
+    const normalized = words
+      .map((w) => String(w || "").trim())
+      .filter(Boolean)
+      .map((w) => escapeRegExp(w));
+    if (!normalized.length) return;
+    const regex = new RegExp(`(${normalized.join("|")})`, "gi");
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (node?.nodeValue?.trim()) textNodes.push(node);
+    }
+    for (const node of textNodes) {
+      const text = node.nodeValue;
+      if (!regex.test(text)) continue;
+      const frag = document.createDocumentFragment();
+      let lastIndex = 0;
+      text.replace(regex, (match, _g, offset) => {
+        if (offset > lastIndex) {
+          frag.appendChild(document.createTextNode(text.slice(lastIndex, offset)));
+        }
+        const mark = document.createElement("span");
+        mark.className = "bak-kw";
+        mark.textContent = match;
+        frag.appendChild(mark);
+        lastIndex = offset + match.length;
+        return match;
+      });
+      if (lastIndex < text.length) {
+        frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+      }
+      node.parentNode?.replaceChild(frag, node);
+    }
+  }
 
 function ensureTtsStyle() {
   const styleId = "__bak-tts-style";
@@ -621,47 +693,115 @@ function articleExtractMdTool() {
   );
 }
 
-function highlightParagraphsTool() {
-  const inputSchema = {
-    type: "object",
-    properties: {
-      indices: { type: "array", items: { type: "number" } },
-      className: { type: "string" }
-    },
-    required: ["indices", "className"],
-    additionalProperties: false
-  };
-  const outputSchema = {
-    type: "object",
-    properties: {
-      ok: { type: "boolean" },
-      highlighted: { type: "number" }
-    },
-    required: ["ok", "highlighted"],
-    additionalProperties: false
-  };
-  return new Tool(
-    "highlightParagraphs",
-    "Highlight Habr article paragraphs by index.",
-    async (args) => {
-      const { indices, className } = args;
-      const article = getHabrArticleRoot();
-      const nodes = [...article.querySelectorAll("p")];
-      const cls = className?.trim() || "bak-highlight";
-      ensureHighlightStyle(cls);
-      let count = 0;
-      for (const idx of indices) {
-        const node = nodes[idx];
-        if (!node) continue;
-        node.classList.add(cls);
-        count += 1;
-      }
-      return { ok: count > 0, highlighted: count };
-    },
-    inputSchema,
-    outputSchema
-  );
-}
+  function highlightKeywordsTool() {
+    const inputSchema = {
+      type: "object",
+      properties: {
+        indices: { type: "array", items: { type: "number" } },
+        className: { type: "string" },
+        keywords: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              index: { type: "number" },
+              words: { type: "array", items: { type: "string" } }
+            },
+            required: ["index", "words"],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ["indices", "className", "keywords"],
+      additionalProperties: false
+    };
+    const outputSchema = {
+      type: "object",
+      properties: {
+        ok: { type: "boolean" },
+        highlighted: { type: "number" },
+        collapsed: { type: "number" }
+      },
+      required: ["ok", "highlighted", "collapsed"],
+      additionalProperties: false
+    };
+    return new Tool(
+      "highlightKeywords",
+      "Highlight keywords in important Habr paragraphs and collapse unimportant blocks.",
+      async (args) => {
+        const { indices, className, keywords } = args;
+        const article = getHabrArticleRoot();
+        const nodes = [...article.querySelectorAll("p")];
+        const cls = className?.trim() || "bak-highlight";
+        ensureHighlightStyle(cls);
+        const important = new Set(indices || []);
+        const keywordMap = new Map();
+        for (const item of keywords || []) {
+          keywordMap.set(item.index, item.words || []);
+        }
+        let count = 0;
+        let collapsed = 0;
+        const collapsedGroup = [];
+        const flushGroup = () => {
+          if (collapsedGroup.length === 0) return;
+          const group = collapsedGroup.slice();
+          const toggle = document.createElement("button");
+          toggle.className = "bak-collapse-toggle";
+          toggle.textContent = "Показать скрытое";
+          let expanded = false;
+          toggle.addEventListener("click", () => {
+            expanded = !expanded;
+            for (const el of group) {
+              el.classList.toggle("bak-hidden", !expanded);
+              if (!expanded) {
+                el.classList.add("bak-collapsed");
+              } else {
+                el.classList.remove("bak-collapsed");
+              }
+            }
+            toggle.textContent = expanded ? "Скрыть" : "Показать скрытое";
+          });
+          const first = group[0];
+          first.parentElement?.insertBefore(toggle, first);
+          collapsedGroup.length = 0;
+        };
+
+        const addToGroup = (el) => {
+          if (!el) return;
+          if (el.classList.contains("bak-hidden")) return;
+          el.classList.add("bak-collapsed", "bak-hidden");
+          collapsedGroup.push(el);
+          collapsed += 1;
+        };
+
+        for (let idx = 0; idx < nodes.length; idx += 1) {
+          const node = nodes[idx];
+          if (!node) continue;
+          if (important.has(idx)) {
+            flushGroup();
+            node.classList.add(cls);
+            highlightKeywordsInElement(node, keywordMap.get(idx) || []);
+            count += 1;
+            continue;
+          }
+
+          const prev = node.previousElementSibling;
+          if (prev && (prev.tagName === "FIGURE" || prev.tagName === "IMG")) {
+            addToGroup(prev);
+          }
+          addToGroup(node);
+          const next = node.nextElementSibling;
+          if (next && (next.tagName === "FIGURE" || next.tagName === "IMG")) {
+            addToGroup(next);
+          }
+        }
+        flushGroup();
+        return { ok: count > 0, highlighted: count, collapsed };
+      },
+      inputSchema,
+      outputSchema
+    );
+  }
 
 function insertTtsPlayerTool() {
   const inputSchema = {
