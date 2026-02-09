@@ -47,17 +47,34 @@ function init() {
 
   ensureSummaryStyle();
 
-  const stats = article.querySelector("div.stats");
-  if (stats) {
-    stats.appendChild(root);
-  } else {
+  const mountRoot = () => {
+    const currentStats = article.querySelector("div.stats");
+    if (currentStats) {
+      currentStats.appendChild(root);
+      return true;
+    }
     const h1 = article.querySelector("h1.tm-title.tm-title_h1[data-test-id='articleTitle']");
     if (h1?.parentElement) {
       h1.parentElement.insertBefore(root, h1.nextSibling);
-    } else {
-      article.prepend(root);
+      return true;
     }
-  }
+    article.prepend(root);
+    return true;
+  };
+
+  mountRoot();
+
+  const observer = new MutationObserver(() => {
+    if (!root.isConnected) {
+      mountRoot();
+    } else {
+      const currentStats = article.querySelector("div.stats");
+      if (currentStats && root.parentElement !== currentStats) {
+        currentStats.appendChild(root);
+      }
+    }
+  });
+  observer.observe(article, { childList: true, subtree: true });
 
   const settingsBtn = shadow.querySelector(".bak-settings-btn");
   const summaryBtn = shadow.querySelector(".bak-summary-btn");
@@ -190,6 +207,9 @@ function init() {
           // no-op
         }
         if (event.type === "message") {
+          // no-op
+        }
+        if (event.type === "keepalive") {
           // no-op
         }
         if (event.type === "status") {
