@@ -246,7 +246,8 @@ function init() {
         "Rank 9 — главная мысль (не более 10% слов абзаца), 7-8 — ключевые факты, 4-6 — важные детали, 1-3 — связки, 0 — шум. " +
         "Суммарно rank 9 должен покрывать <=10% слов абзаца, rank 8 <=15%, rank 7 <=20%. " +
         "Сегменты должны полностью покрывать исходный абзац, в исходном порядке. " +
-        "Вызови rankSegments с массивом items=[{index, segments:[{rank, text}]}] для всех абзацев.\n\n" +
+        "Вызови rankSegments с массивом items=[{index, segments:[{rank, text}]}] для всех абзацев. " +
+        "Не отвечай текстом, используй только вызов инструмента.\n\n" +
         "Абзацы:\n" +
         paragraphs.map((p, i) => `[#${i}] ${p}`).join("\n");
       let thinkingSummary = "";
@@ -295,7 +296,10 @@ function init() {
         }
       }
       if (rankedItems) {
-        applySummarySegments(rankedItems);
+        const valid = validateRankedItems(rankedItems, paragraphs.length);
+        if (valid.length) {
+          applySummarySegments(valid);
+        }
       }
       if (!summaryApplied) {
         setStatus("Summary не применен. Проверьте ключ и модель.");
@@ -418,6 +422,27 @@ function init() {
       .join("");
   }
 
+  function validateRankedItems(items, maxIndex) {
+    if (!Array.isArray(items)) return [];
+    const sanitized = [];
+    for (const item of items) {
+      if (!item || typeof item.index !== "number") continue;
+      if (item.index < 0 || item.index >= maxIndex) continue;
+      if (!Array.isArray(item.segments)) continue;
+      const segments = [];
+      for (const seg of item.segments) {
+        if (!seg || typeof seg.text !== "string") continue;
+        const rankNum = Number(seg.rank);
+        if (!Number.isFinite(rankNum)) continue;
+        const rank = Math.max(0, Math.min(9, Math.round(rankNum)));
+        segments.push({ rank, text: seg.text });
+      }
+      if (segments.length === 0) continue;
+      sanitized.push({ index: item.index, segments });
+    }
+    return sanitized;
+  }
+
   if (detailSlider && detailValue) {
     detailSlider.value = "100";
     detailValue.textContent = "100%";
@@ -524,34 +549,6 @@ function extractHabrMarkdown() {
   return { title, markdown, paragraphs };
 }
 
-
-function articleExtractMdTool() {
-  const inputSchema = {
-    type: "object",
-    properties: {},
-    required: [],
-    additionalProperties: false
-  };
-  const outputSchema = {
-    type: "object",
-    properties: {
-      title: { type: "string" },
-      markdown: { type: "string" },
-      paragraphs: { type: "array", items: { type: "string" } }
-    },
-    required: ["title", "markdown", "paragraphs"],
-    additionalProperties: false
-  };
-  return new Tool(
-    "articleExtractMd",
-    "Extract the current Habr article into Markdown and return the paragraph list.",
-    async () => {
-      return extractHabrMarkdown();
-    },
-    inputSchema,
-    outputSchema
-  );
-}
 
 function getTemplate() {
   return `
