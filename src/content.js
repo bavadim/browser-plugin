@@ -301,8 +301,9 @@ function init() {
       addAssistantMessage("Авто-режим: выделяю ключевые абзацы и добавляю озвучку.");
       const prompt =
         "Ты на странице статьи Habr. Выдели 5 самых важных абзацев и вставь плеер озвучки. " +
-        "Сначала вызови articleExtractMd, затем выбери важные абзацы, вызови highlightParagraphs, " +
-        "после этого вызови insertTtsPlayer с markdown статьи.";
+        "Сначала вызови articleExtractMd, затем выбери важные абзацы, вызови highlightParagraphs " +
+        "с параметрами indices и className='bak-highlight', после этого вызови insertTtsPlayer " +
+        "с markdown статьи.";
       let thinkingSummary = "";
       for await (const ev of withStatus(
         runAgent(
@@ -627,7 +628,7 @@ function highlightParagraphsTool() {
       indices: { type: "array", items: { type: "number" } },
       className: { type: "string" }
     },
-    required: ["indices"],
+    required: ["indices", "className"],
     additionalProperties: false
   };
   const outputSchema = {
