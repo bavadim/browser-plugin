@@ -303,7 +303,7 @@ function init() {
         "Ты на странице статьи Habr. Выдели 5 самых важных абзацев и вставь плеер озвучки. " +
         "Сначала вызови articleExtractMd, затем выбери важные абзацы, вызови highlightParagraphs " +
         "с параметрами indices и className='bak-highlight', после этого вызови insertTtsPlayer " +
-        "с markdown статьи.";
+        "с markdown статьи и lang='ru-RU'.";
       let thinkingSummary = "";
       for await (const ev of withStatus(
         runAgent(
@@ -670,7 +670,7 @@ function insertTtsPlayerTool() {
       markdown: { type: "string" },
       lang: { type: "string" }
     },
-    required: ["markdown"],
+    required: ["markdown", "lang"],
     additionalProperties: false
   };
   const outputSchema = {
@@ -747,11 +747,11 @@ function insertTtsPlayerTool() {
           return;
         }
         if (!voice) {
-          voice = await selectVoice(lang || "ru-RU");
+          voice = await selectVoice(lang);
         }
         const utter = new SpeechSynthesisUtterance(chunks[currentIndex]);
         if (voice) utter.voice = voice;
-        utter.lang = lang || "ru-RU";
+        utter.lang = lang;
         utter.onend = () => {
           currentIndex += 1;
           progress.textContent = `${currentIndex}/${chunks.length}`;
