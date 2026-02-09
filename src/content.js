@@ -77,8 +77,8 @@ function init() {
   observer.observe(article, { childList: true, subtree: true });
 
   const settingsBtn = shadow.querySelector(".bak-settings-btn");
-  const summaryBtn = shadow.querySelector(".bak-summary-btn");
-  const originalBtn = shadow.querySelector(".bak-original-btn");
+  const detailSlider = shadow.querySelector(".bak-detail");
+  const detailValue = shadow.querySelector(".bak-detail-value");
   const statusEl = shadow.querySelector(".bak-status");
 
   const agentMessages = createAgentMessages(
@@ -98,26 +98,29 @@ function init() {
   let summaryActive = false;
   let summaryLoading = false;
   let summaryApplied = false;
+  let currentThreshold = 0;
   const originalHtml = new Map();
   const summaryHtml = new Map();
 
-  summaryBtn?.addEventListener("click", async () => {
-    if (summaryLoading) return;
+  detailSlider?.addEventListener("input", async (event) => {
+    const value = Number(event.target.value || 100);
+    if (detailValue) detailValue.textContent = `${value}%`;
+    if (value >= 100) {
+      applySummaryMode(false);
+      return;
+    }
     if (!summaryGenerated) {
       setSummaryLoading(true);
       await generateSummary();
       summaryGenerated = true;
       setSummaryLoading(false);
     }
-    if (summaryApplied) {
-      applySummaryMode(true);
-    } else {
+    if (!summaryApplied) {
       setStatus("Не удалось выделить ключевые фразы.");
+      return;
     }
-  });
-
-  originalBtn?.addEventListener("click", () => {
-    applySummaryMode(false);
+    setThreshold(value);
+    applySummaryMode(true);
   });
 
   function setStatus(text) {
@@ -126,9 +129,8 @@ function init() {
 
   function setSummaryLoading(isLoading) {
     summaryLoading = isLoading;
-    if (!summaryBtn) return;
-    summaryBtn.disabled = isLoading;
-    summaryBtn.textContent = isLoading ? "Loading..." : "Summary";
+    if (detailSlider) detailSlider.disabled = isLoading;
+    if (detailValue) detailValue.textContent = isLoading ? "..." : `${detailSlider?.value ?? 100}%`;
   }
 
   function loadSettings() {
@@ -159,7 +161,7 @@ function init() {
     });
   }
 
-  function applySummaryMarkupTool() {
+  function applySummarySegmentsTool() {
     const inputSchema = {
       type: "object",
       properties: {
@@ -169,9 +171,20 @@ function init() {
             type: "object",
             properties: {
               index: { type: "number" },
-              html: { type: "string" }
+              segments: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    rank: { type: "number" },
+                    text: { type: "string" }
+                  },
+                  required: ["rank", "text"],
+                  additionalProperties: false
+                }
+              }
             },
-            required: ["index", "html"],
+            required: ["index", "segments"],
             additionalProperties: false
           }
         }
@@ -189,8 +202,8 @@ function init() {
       additionalProperties: false
     };
     return new Tool(
-      "applySummaryMarkup",
-      "Apply summary markup by replacing each paragraph HTML with <strong> highlights.",
+      "applySummarySegments",
+      "Apply summary segments with rank for heatmap rendering.",
       async (args) => {
         const { items } = args;
         const nodes = [...article.querySelectorAll("p")];
@@ -200,8 +213,9 @@ function init() {
           const idx = item.index;
           const node = nodes[idx];
           if (!node) continue;
-          summaryHtml.set(idx, item.html);
-          node.innerHTML = item.html;
+          const html = buildSegmentsHtml(item.segments || []);
+          summaryHtml.set(idx, html);
+          node.innerHTML = html;
           applied += 1;
         }
         summaryApplied = applied > 0;
@@ -214,7 +228,7 @@ function init() {
 
   const tools = [
     articleExtractMdTool(),
-    applySummaryMarkupTool()
+    applySummarySegmentsTool()
   ];
 
   async function generateSummary() {
@@ -230,9 +244,10 @@ function init() {
       const prompt =
         "Ты на странице статьи Habr. " +
         "Сначала вызови articleExtractMd. " +
-        "Далее для каждого абзаца верни HTML с <strong> вокруг главных фраз (2-6 слов). " +
-        "Не добавляй других тегов. " +
-        "Вызови applySummaryMarkup с массивом items=[{index, html}] для всех абзацев.";
+        "Далее для каждого абзаца разбей текст на фразы и задай каждой фразе rank 0..9. " +
+        "Rank 9 — главная мысль, 7-8 — ключевые факты, 4-6 — важные детали, 1-3 — связки, 0 — шум. " +
+        "Сегменты должны полностью покрывать исходный абзац, в исходном порядке. " +
+        "Вызови applySummarySegments с массивом items=[{index, segments:[{rank, text}]}] для всех абзацев.";
       let thinkingSummary = "";
       for await (const ev of withStatus(
         runAgent(
@@ -303,6 +318,7 @@ function init() {
       const summary = summaryHtml.get(i);
       if (summary) nodes[i].innerHTML = summary;
     }
+    applyHeatmap();
   }
 
   function storeOriginal(nodes) {
@@ -313,18 +329,53 @@ function init() {
     }
   }
 
-  async function autoSummary() {
-    if (summaryLoading || summaryGenerated) return;
-    setSummaryLoading(true);
-    await generateSummary();
-    summaryGenerated = true;
-    setSummaryLoading(false);
-    if (summaryApplied) {
-      applySummaryMode(true);
+  function setThreshold(value) {
+    const clamped = Math.max(0, Math.min(100, value));
+    currentThreshold = 9 - Math.round(clamped / 10);
+  }
+
+  function applyHeatmap() {
+    if (!summaryActive) return;
+    const article = getHabrArticleRoot();
+    const spans = [...article.querySelectorAll("[data-rank]")];
+    for (const span of spans) {
+      const rank = Number(span.dataset.rank || "0");
+      span.classList.remove("bak-rank-9", "bak-rank-dark", "bak-rank-light", "bak-rank-faint");
+      if (rank >= 9) {
+        span.classList.add("bak-rank-9");
+        continue;
+      }
+      if (rank >= currentThreshold) {
+        span.classList.add("bak-rank-dark");
+        continue;
+      }
+      if (rank >= 1) {
+        span.classList.add("bak-rank-light");
+        continue;
+      }
+      span.classList.add("bak-rank-faint");
     }
   }
 
-  autoSummary();
+  function buildSegmentsHtml(segments) {
+    const escape = (text) =>
+      String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    return (segments || [])
+      .map((seg) => {
+        const rank = Number(seg.rank ?? 0);
+        return `<span data-rank=\"${rank}\">${escape(seg.text ?? \"\")}</span>`;
+      })
+      .join("");
+  }
+
+  if (detailSlider && detailValue) {
+    detailSlider.value = "100";
+    detailValue.textContent = "100%";
+  }
+  setThreshold(100);
 }
 
 function storageGet(keys, cb) {
@@ -355,19 +406,34 @@ function ensureSummaryStyle() {
   const style = document.createElement("style");
   style.id = styleId;
   style.textContent = `
-    article.tm-article-presenter__content.bak-summary-mode p {
-      color: rgba(15, 23, 42, 0.45);
+    article.tm-article-presenter__content.bak-summary-mode span[data-rank] {
+      transition: color 120ms ease;
     }
-    article.tm-article-presenter__content.bak-summary-mode strong {
+    article.tm-article-presenter__content.bak-summary-mode .bak-rank-9 {
       color: #0f172a;
       font-weight: 700;
     }
+    article.tm-article-presenter__content.bak-summary-mode .bak-rank-dark {
+      color: rgba(15, 23, 42, 0.75);
+    }
+    article.tm-article-presenter__content.bak-summary-mode .bak-rank-light {
+      color: rgba(15, 23, 42, 0.45);
+    }
+    article.tm-article-presenter__content.bak-summary-mode .bak-rank-faint {
+      color: rgba(15, 23, 42, 0.15);
+    }
     @media (prefers-color-scheme: dark) {
-      article.tm-article-presenter__content.bak-summary-mode p {
-        color: rgba(226, 232, 240, 0.45);
-      }
-      article.tm-article-presenter__content.bak-summary-mode strong {
+      article.tm-article-presenter__content.bak-summary-mode .bak-rank-9 {
         color: #e2e8f0;
+      }
+      article.tm-article-presenter__content.bak-summary-mode .bak-rank-dark {
+        color: rgba(226, 232, 240, 0.78);
+      }
+      article.tm-article-presenter__content.bak-summary-mode .bak-rank-light {
+        color: rgba(226, 232, 240, 0.48);
+      }
+      article.tm-article-presenter__content.bak-summary-mode .bak-rank-faint {
+        color: rgba(226, 232, 240, 0.2);
       }
     }
   `;
@@ -444,9 +510,10 @@ function getTemplate() {
         </div>
         <button class="bak-settings-btn" title="Settings">⚙</button>
       </div>
-      <div class="bak-actions">
-        <button class="bak-summary-btn">Summary</button>
-        <button class="bak-original-btn ghost">Original</button>
+      <div class="bak-slider">
+        <label>Detail</label>
+        <input class="bak-detail" type="range" min="0" max="100" step="10" value="100" />
+        <span class="bak-detail-value">100%</span>
       </div>
       <div class="bak-status"></div>
     </div>
@@ -505,23 +572,23 @@ function getStyles() {
       font-size: 0.75rem;
       color: #64748b;
     }
-    .bak-actions {
+    .bak-slider {
       display: flex;
-      gap: 8px;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.85rem;
+      color: #475569;
     }
-    .bak-actions button {
-      flex: 1;
-      padding: 8px 10px;
-      border-radius: 10px;
-      border: none;
-      background: #0f172a;
-      color: #ffffff;
-      cursor: pointer;
+    .bak-slider label {
       font-weight: 600;
     }
-    .bak-actions button.ghost {
-      background: #e2e8f0;
-      color: #0f172a;
+    .bak-detail {
+      flex: 1;
+    }
+    .bak-detail-value {
+      min-width: 44px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
     @media (prefers-color-scheme: dark) {
       .bak-card {
@@ -529,9 +596,8 @@ function getStyles() {
         border-color: rgba(226, 232, 240, 0.16);
         color: #e2e8f0;
       }
-      .bak-actions button.ghost {
-        background: rgba(226, 232, 240, 0.12);
-        color: #e2e8f0;
+      .bak-slider {
+        color: rgba(226, 232, 240, 0.75);
       }
     }
   `;
