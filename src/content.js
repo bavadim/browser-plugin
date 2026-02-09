@@ -366,7 +366,7 @@ function init() {
     return (segments || [])
       .map((seg) => {
         const rank = Number(seg.rank ?? 0);
-        return `<span data-rank=\"${rank}\">${escape(seg.text ?? \"\")}</span>`;
+        return `<span data-rank="${rank}">${escape(seg.text ?? "")}</span>`;
       })
       .join("");
   }
