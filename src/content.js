@@ -86,7 +86,7 @@ function init() {
   let summaryActive = false;
   let summaryLoading = false;
   let summaryApplied = false;
-  let currentThreshold = 0;
+  let currentPercent = 100;
   const originalHtml = new Map();
   const summaryHtml = new Map();
 
@@ -108,7 +108,7 @@ function init() {
       setStatus("Не удалось выделить ключевые фразы.");
       return;
     }
-    setThreshold(value);
+    currentPercent = value;
     applySummaryMode(true);
   });
 
@@ -234,7 +234,9 @@ function init() {
         "Ты на странице статьи Habr. " +
         "Сначала вызови articleExtractMd. " +
         "Далее для каждого абзаца разбей текст на фразы и задай каждой фразе rank 0..9. " +
-        "Rank 9 — главная мысль, 7-8 — ключевые факты, 4-6 — важные детали, 1-3 — связки, 0 — шум. " +
+        "По умолчанию всем фразам ставь rank 1-2, потом поднимай rank только важным фразам. " +
+        "Rank 9 — главная мысль (не более 10% слов абзаца), 7-8 — ключевые факты, 4-6 — важные детали, 1-3 — связки, 0 — шум. " +
+        "Суммарно rank 9 должен покрывать <=10% слов абзаца, rank 8 <=15%, rank 7 <=20%. " +
         "Сегменты должны полностью покрывать исходный абзац, в исходном порядке. " +
         "Вызови applySummarySegments с массивом items=[{index, segments:[{rank, text}]}] для всех абзацев.";
       let thinkingSummary = "";
@@ -318,24 +320,30 @@ function init() {
     }
   }
 
-  function setThreshold(value) {
-    const clamped = Math.max(0, Math.min(100, value));
-    currentThreshold = 9 - Math.round(clamped / 10);
-  }
-
   function applyHeatmap() {
     if (!summaryActive) return;
     const article = getHabrArticleRoot();
     const spans = [...article.querySelectorAll("[data-rank]")];
+    const selected = selectBrightSpans(spans, currentPercent);
     for (const span of spans) {
       const rank = Number(span.dataset.rank || "0");
-      span.classList.remove("bak-rank-9", "bak-rank-dark", "bak-rank-light", "bak-rank-faint");
-      if (rank >= 9) {
+      span.classList.remove(
+        "bak-rank-9",
+        "bak-rank-dark",
+        "bak-rank-mid",
+        "bak-rank-light",
+        "bak-rank-faint"
+      );
+      if (selected.has(span)) {
         span.classList.add("bak-rank-9");
         continue;
       }
-      if (rank >= currentThreshold) {
+      if (rank >= 7) {
         span.classList.add("bak-rank-dark");
+        continue;
+      }
+      if (rank >= 4) {
+        span.classList.add("bak-rank-mid");
         continue;
       }
       if (rank >= 1) {
@@ -344,6 +352,41 @@ function init() {
       }
       span.classList.add("bak-rank-faint");
     }
+  }
+
+  function countWords(text) {
+    const matches = String(text || "").match(/[\p{L}\p{N}]+/gu);
+    return matches ? matches.length : 0;
+  }
+
+  function selectBrightSpans(spans, percent) {
+    const clamped = Math.max(0, Math.min(100, percent));
+    if (clamped >= 100) {
+      return new Set(spans);
+    }
+    const withCounts = spans.map((span, idx) => ({
+      span,
+      rank: Number(span.dataset.rank || "0"),
+      words: Number(span.dataset.words || countWords(span.textContent)),
+      idx
+    }));
+    const totalWords = withCounts.reduce((sum, item) => sum + (item.words || 0), 0);
+    const targetWords = Math.floor(totalWords * (clamped / 100));
+    if (targetWords <= 0) return new Set();
+    const sorted = withCounts.slice().sort((a, b) => {
+      if (b.rank !== a.rank) return b.rank - a.rank;
+      return a.idx - b.idx;
+    });
+    const selected = new Set();
+    let acc = 0;
+    for (const item of sorted) {
+      if (!item.words) continue;
+      if (acc + item.words > targetWords) continue;
+      selected.add(item.span);
+      acc += item.words;
+      if (acc >= targetWords) break;
+    }
+    return selected;
   }
 
   function buildSegmentsHtml(segments) {
@@ -355,7 +398,9 @@ function init() {
     return (segments || [])
       .map((seg) => {
         const rank = Number(seg.rank ?? 0);
-        return `<span data-rank="${rank}">${escape(seg.text ?? "")}</span>`;
+        const text = seg.text ?? "";
+        const words = countWords(text);
+        return `<span data-rank="${rank}" data-words="${words}">${escape(text)}</span>`;
       })
       .join("");
   }
@@ -364,7 +409,7 @@ function init() {
     detailSlider.value = "100";
     detailValue.textContent = "100%";
   }
-  setThreshold(100);
+  currentPercent = 100;
 }
 
 function storageGet(keys, cb) {
@@ -405,6 +450,9 @@ function ensureSummaryStyle() {
     article.tm-article-presenter__content.bak-summary-mode .bak-rank-dark {
       color: rgba(15, 23, 42, 0.75);
     }
+    article.tm-article-presenter__content.bak-summary-mode .bak-rank-mid {
+      color: rgba(15, 23, 42, 0.6);
+    }
     article.tm-article-presenter__content.bak-summary-mode .bak-rank-light {
       color: rgba(15, 23, 42, 0.45);
     }
@@ -417,6 +465,9 @@ function ensureSummaryStyle() {
       }
       article.tm-article-presenter__content.bak-summary-mode .bak-rank-dark {
         color: rgba(226, 232, 240, 0.78);
+      }
+      article.tm-article-presenter__content.bak-summary-mode .bak-rank-mid {
+        color: rgba(226, 232, 240, 0.6);
       }
       article.tm-article-presenter__content.bak-summary-mode .bak-rank-light {
         color: rgba(226, 232, 240, 0.48);
