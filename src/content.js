@@ -79,13 +79,17 @@ function init() {
 
   let summaryGenerated = false;
   let summaryActive = false;
+  let summaryLoading = false;
   const originalHtml = new Map();
   const summaryHtml = new Map();
 
   summaryBtn?.addEventListener("click", async () => {
+    if (summaryLoading) return;
     if (!summaryGenerated) {
+      setSummaryLoading(true);
       await generateSummary();
       summaryGenerated = true;
+      setSummaryLoading(false);
     }
     applySummaryMode(true);
   });
@@ -96,6 +100,13 @@ function init() {
 
   function setStatus(text) {
     if (statusEl) statusEl.textContent = text || "";
+  }
+
+  function setSummaryLoading(isLoading) {
+    summaryLoading = isLoading;
+    if (!summaryBtn) return;
+    summaryBtn.disabled = isLoading;
+    summaryBtn.textContent = isLoading ? "Loading..." : "Summary";
   }
 
   function loadSettings() {
@@ -215,6 +226,17 @@ function init() {
       }
     }
   }
+
+  async function autoSummary() {
+    if (summaryLoading || summaryGenerated) return;
+    setSummaryLoading(true);
+    await generateSummary();
+    summaryGenerated = true;
+    setSummaryLoading(false);
+    applySummaryMode(true);
+  }
+
+  autoSummary();
 }
 
 function storageGet(keys, cb) {
