@@ -50,18 +50,13 @@ function init() {
   document.documentElement.appendChild(root);
 
   const closeBtn = shadow.querySelector(".bak-close");
+  const settingsBtn = shadow.querySelector(".bak-settings-btn");
   const runBtn = shadow.querySelector(".bak-run");
   const undoBtn = shadow.querySelector(".bak-undo");
   const clearBtn = shadow.querySelector(".bak-clear");
   const promptInput = shadow.querySelector(".bak-input");
   const chatLog = shadow.querySelector(".bak-log");
-  const baseUrlInput = shadow.querySelector(".bak-baseurl");
-  const modelInput = shadow.querySelector(".bak-model");
-  const apiKeyInput = shadow.querySelector(".bak-apikey");
   const statusEl = shadow.querySelector(".bak-status");
-
-  if (baseUrlInput && !baseUrlInput.value) baseUrlInput.value = DEFAULT_BASE_URL;
-  if (modelInput && !modelInput.value) modelInput.value = DEFAULT_MODEL;
 
   const chatUi = chatLog ? createChatUi({ container: chatLog }) : null;
 
@@ -90,19 +85,21 @@ function init() {
   const history = [];
   const undoStack = [];
 
-  restoreState();
   restoreHistory();
   restoreUndo();
 
   closeBtn?.addEventListener("click", () => toggle(false));
+  settingsBtn?.addEventListener("click", () => {
+    api?.runtime?.openOptionsPage?.();
+  });
 
   runBtn?.addEventListener("click", async () => {
     const prompt = promptInput?.value?.trim();
     if (!prompt) return;
 
-    const adapter = getAdapter();
+    const adapter = await getAdapter();
     if (!adapter) {
-      addAssistantMessage("Missing model settings. Add base URL and API key in Settings.");
+      addAssistantMessage("Missing model settings. Open Settings to add base URL and API key.");
       return;
     }
 
@@ -197,10 +194,6 @@ function init() {
     }
   });
 
-  baseUrlInput?.addEventListener("change", persistSettings);
-  modelInput?.addEventListener("change", persistSettings);
-  apiKeyInput?.addEventListener("change", persistSettings);
-
   function toggle(forceOpen) {
     const isHidden = root.style.display === "none";
     const shouldShow = forceOpen === undefined ? isHidden : forceOpen;
@@ -251,27 +244,7 @@ function init() {
     storageSet({ [HISTORY_KEY]: history });
   }
 
-  function persistSettings() {
-    if (!api?.storage?.local) return;
-    storageSet({
-      [STORAGE_KEY]: {
-        baseUrl: baseUrlInput?.value?.trim() ?? DEFAULT_BASE_URL,
-        model: modelInput?.value?.trim() ?? DEFAULT_MODEL,
-        apiKey: apiKeyInput?.value?.trim() ?? ""
-      }
-    });
-  }
-
-  function restoreState() {
-    if (!api?.storage?.local) return;
-    storageGet([STORAGE_KEY], (res) => {
-      const state = res?.[STORAGE_KEY];
-      if (!state) return;
-      if (baseUrlInput && state.baseUrl) baseUrlInput.value = state.baseUrl;
-      if (modelInput && state.model) modelInput.value = state.model;
-      if (apiKeyInput && state.apiKey) apiKeyInput.value = state.apiKey;
-    });
-  }
+  maybeAutoRun();
 
   function restoreUndo() {
     if (!api?.storage?.local) return;
@@ -288,10 +261,11 @@ function init() {
     storageSet({ [UNDO_KEY]: undoStack.slice(-5) });
   }
 
-  function getAdapter() {
-    const baseURL = baseUrlInput?.value?.trim() ?? DEFAULT_BASE_URL;
-    const apiKey = apiKeyInput?.value?.trim() ?? "";
-    const model = modelInput?.value?.trim() || DEFAULT_MODEL;
+  async function getAdapter() {
+    const settings = await loadSettings();
+    const baseURL = settings?.baseUrl?.trim() || DEFAULT_BASE_URL;
+    const apiKey = settings?.apiKey?.trim() || "";
+    const model = settings?.model?.trim() || DEFAULT_MODEL;
     if (!apiKey) {
       return null;
     }
@@ -347,7 +321,7 @@ function storageGet(keys, cb) {
   }
 }
 
-function storageSet(data) {
+  function storageSet(data) {
   try {
     const result = api.storage.local.set(data);
     if (result && typeof result.catch === "function") {
@@ -355,6 +329,86 @@ function storageSet(data) {
     }
   } catch {
     // ignore
+  }
+
+  function loadSettings() {
+    return new Promise((resolve) => {
+      if (!api?.storage?.local) {
+        resolve(null);
+        return;
+      }
+      storageGet([STORAGE_KEY], (res) => {
+        resolve(res?.[STORAGE_KEY] ?? null);
+      });
+    });
+  }
+
+  async function maybeAutoRun() {
+    try {
+      if (!location?.hostname?.endsWith("habr.com")) return;
+      if (!location?.pathname?.includes("/articles/")) return;
+      if (globalThis.__bakAutoRunDone) return;
+      globalThis.__bakAutoRunDone = true;
+      const adapter = await getAdapter();
+      if (!adapter) {
+        addAssistantMessage("Настройки модели не заполнены. Откройте Settings.");
+        return;
+      }
+      addAssistantMessage("Авто-режим: выделяю ключевые абзацы и добавляю озвучку.");
+      const prompt =
+        "Ты на странице статьи Habr. Выдели 5 самых важных абзацев и вставь плеер озвучки. " +
+        "Сначала вызови articleExtractMd, затем выбери важные абзацы, вызови highlightParagraphs, " +
+        "после этого вызови insertTtsPlayer с markdown статьи.";
+      let thinkingSummary = "";
+      for await (const ev of withStatus(
+        runAgent(
+          agentMessages,
+          adapter.generate,
+          prompt,
+          [...tools, ...skills],
+          25,
+          agentContext,
+          undefined,
+          {
+            tokenCounter: adapter.countTokens,
+            contextWindowTokens: adapter.contextWindowTokens,
+            model: adapter.model
+          }
+        )
+      )) {
+        if (isAgentError(ev)) {
+          const error = ev.left;
+          addAssistantMessage(`${String(error)}`);
+          break;
+        }
+        const event = ev.right;
+        if (event.type === "message.delta") {
+          chatUi?.appendAssistantDelta(event.delta);
+        }
+        if (event.type === "message") {
+          chatUi?.finalizeAssistantMessage(event.content);
+          pushHistory({ role: "assistant", content: event.content });
+          persistHistory();
+        }
+        if (event.type === "status") {
+          if (event.status.kind !== "thinking") {
+            thinkingSummary = "";
+          }
+          setStatus(event.status.label || event.status.kind);
+        }
+        if (event.type === "thinking.delta") {
+          thinkingSummary += event.delta;
+          chatUi?.setThinkingSummary(thinkingSummary);
+        }
+        if (event.type === "thinking") {
+          thinkingSummary = event.summary;
+          chatUi?.setThinkingSummary(event.summary);
+        }
+      }
+      setStatus("");
+    } catch (error) {
+      addAssistantMessage(`${String(error)}`);
+    }
   }
 }
 
@@ -753,17 +807,11 @@ function getTemplate() {
           <div class="bak-title">Page Agent</div>
           <div class="bak-subtitle">Customize this page</div>
         </div>
-        <button class="bak-close" title="Close">×</button>
+        <div class="bak-header-actions">
+          <button class="bak-settings-btn" title="Settings">⚙</button>
+          <button class="bak-close" title="Close">×</button>
+        </div>
       </div>
-      <details class="bak-settings" open>
-        <summary>Settings</summary>
-        <label>Model base URL</label>
-        <input class="bak-baseurl" placeholder="${DEFAULT_BASE_URL}" />
-        <label>Model</label>
-        <input class="bak-model" value="${DEFAULT_MODEL}" />
-        <label>API key</label>
-        <input class="bak-apikey" placeholder="sk-..." />
-      </details>
       <div class="bak-log"></div>
       <div class="bak-status"></div>
       <textarea class="bak-input" rows="3" placeholder="Describe the change..."></textarea>
@@ -800,6 +848,11 @@ function getStyles() {
       justify-content: space-between;
       align-items: center;
     }
+    .bak-header-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
     .bak-title {
       font-weight: 700;
       font-size: 1rem;
@@ -808,7 +861,7 @@ function getStyles() {
       font-size: 0.78rem;
       color: #64748b;
     }
-    .bak-close {
+    .bak-close, .bak-settings-btn {
       border: none;
       background: #e2e8f0;
       border-radius: 10px;
@@ -817,33 +870,8 @@ function getStyles() {
       font-size: 1.1rem;
       cursor: pointer;
     }
-    .bak-settings {
-      border: 1px solid #e2e8f0;
-      border-radius: 12px;
-      padding: 8px 10px;
-      background: #ffffff;
-    }
-    .bak-settings summary {
-      cursor: pointer;
-      font-weight: 600;
-      margin-bottom: 6px;
-    }
-    .bak-settings label {
-      display: block;
-      font-size: 0.78rem;
-      font-weight: 600;
-      color: #475569;
-      margin-top: 6px;
-    }
-    .bak-settings input {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 6px 8px;
-      margin-top: 4px;
-      border-radius: 8px;
-      border: 1px solid #cbd5f5;
-      font: inherit;
-      font-size: 0.85rem;
+    .bak-settings-btn {
+      font-size: 0.95rem;
     }
     .bak-log {
       flex: 1 1 auto;
