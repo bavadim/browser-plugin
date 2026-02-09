@@ -88,11 +88,6 @@ function init() {
       "Do not add any other tags. Do not modify or remove the element with id '__bak-root'."
   );
 
-  const tools = [
-    articleExtractMdTool(),
-    applySummaryMarkupTool()
-  ];
-
   const agentContext = { viewRoot: document.body };
 
   settingsBtn?.addEventListener("click", () => {
@@ -163,6 +158,64 @@ function init() {
       dangerouslyAllowBrowser: true
     });
   }
+
+  function applySummaryMarkupTool() {
+    const inputSchema = {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              index: { type: "number" },
+              html: { type: "string" }
+            },
+            required: ["index", "html"],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ["items"],
+      additionalProperties: false
+    };
+    const outputSchema = {
+      type: "object",
+      properties: {
+        ok: { type: "boolean" },
+        applied: { type: "number" }
+      },
+      required: ["ok", "applied"],
+      additionalProperties: false
+    };
+    return new Tool(
+      "applySummaryMarkup",
+      "Apply summary markup by replacing each paragraph HTML with <strong> highlights.",
+      async (args) => {
+        const { items } = args;
+        const nodes = [...article.querySelectorAll("p")];
+        storeOriginal(nodes);
+        let applied = 0;
+        for (const item of items || []) {
+          const idx = item.index;
+          const node = nodes[idx];
+          if (!node) continue;
+          summaryHtml.set(idx, item.html);
+          node.innerHTML = item.html;
+          applied += 1;
+        }
+        summaryApplied = applied > 0;
+        return { ok: applied > 0, applied };
+      },
+      inputSchema,
+      outputSchema
+    );
+  }
+
+  const tools = [
+    articleExtractMdTool(),
+    applySummaryMarkupTool()
+  ];
 
   async function generateSummary() {
     try {
@@ -380,60 +433,6 @@ function articleExtractMdTool() {
     outputSchema
   );
 }
-
-  function applySummaryMarkupTool() {
-    const inputSchema = {
-      type: "object",
-      properties: {
-        items: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              index: { type: "number" },
-              html: { type: "string" }
-            },
-            required: ["index", "html"],
-            additionalProperties: false
-          }
-        }
-      },
-      required: ["items"],
-      additionalProperties: false
-    };
-    const outputSchema = {
-      type: "object",
-      properties: {
-        ok: { type: "boolean" },
-        applied: { type: "number" }
-      },
-      required: ["ok", "applied"],
-      additionalProperties: false
-    };
-    return new Tool(
-      "applySummaryMarkup",
-      "Apply summary markup by replacing each paragraph HTML with <strong> highlights.",
-      async (args) => {
-        const { items } = args;
-        const article = getHabrArticleRoot();
-        const nodes = [...article.querySelectorAll("p")];
-        storeOriginal(nodes);
-        let applied = 0;
-        for (const item of items || []) {
-          const idx = item.index;
-          const node = nodes[idx];
-          if (!node) continue;
-          summaryHtml.set(idx, item.html);
-          node.innerHTML = item.html;
-          applied += 1;
-        }
-        summaryApplied = applied > 0;
-        return { ok: applied > 0, applied };
-      },
-      inputSchema,
-      outputSchema
-    );
-  }
 
 function getTemplate() {
   return `
