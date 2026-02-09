@@ -454,17 +454,18 @@ function extractHabrMarkdown() {
     style.id = styleId;
     style.textContent = `
     .${className} {
-      background: #fff6bf;
-      border-left: 4px solid #f59e0b;
-      padding: 4px 8px;
-      margin-left: -8px;
-      border-radius: 6px;
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      border-left-width: 4px;
+      border-radius: 10px;
+      padding: 8px 10px;
+      margin: 10px 0;
+      background: rgba(15, 23, 42, 0.02);
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
     }
     .bak-kw {
-      background: #fde68a;
-      padding: 0 2px;
-      border-radius: 4px;
       font-weight: 600;
+      text-decoration: underline dotted;
+      text-underline-offset: 2px;
     }
     .bak-collapsed {
       display: -webkit-box;
@@ -480,13 +481,24 @@ function extractHabrMarkdown() {
       align-items: center;
       gap: 6px;
       font-size: 0.78rem;
-      color: #0f172a;
-      background: #e2e8f0;
-      border: none;
+      color: inherit;
+      background: rgba(15, 23, 42, 0.06);
+      border: 1px solid rgba(15, 23, 42, 0.12);
       border-radius: 999px;
       padding: 4px 10px;
       margin: 6px 0;
       cursor: pointer;
+    }
+    @media (prefers-color-scheme: dark) {
+      .${className} {
+        border-color: rgba(226, 232, 240, 0.18);
+        background: rgba(226, 232, 240, 0.04);
+        box-shadow: 0 6px 14px rgba(2, 6, 23, 0.35);
+      }
+      .bak-collapse-toggle {
+        background: rgba(226, 232, 240, 0.08);
+        border-color: rgba(226, 232, 240, 0.2);
+      }
     }
     `;
     document.head.appendChild(style);
