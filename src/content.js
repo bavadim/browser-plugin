@@ -47,11 +47,16 @@ function init() {
 
   ensureSummaryStyle();
 
-  const firstP = article.querySelector("p");
-  if (firstP?.parentElement) {
-    firstP.parentElement.insertBefore(root, firstP);
+  const stats = article.querySelector("div.stats");
+  if (stats) {
+    stats.appendChild(root);
   } else {
-    article.prepend(root);
+    const h1 = article.querySelector("h1.tm-title.tm-title_h1[data-test-id='articleTitle']");
+    if (h1?.parentElement) {
+      h1.parentElement.insertBefore(root, h1.nextSibling);
+    } else {
+      article.prepend(root);
+    }
   }
 
   const settingsBtn = shadow.querySelector(".bak-settings-btn");
@@ -80,6 +85,7 @@ function init() {
   let summaryGenerated = false;
   let summaryActive = false;
   let summaryLoading = false;
+  let summaryApplied = false;
   const originalHtml = new Map();
   const summaryHtml = new Map();
 
@@ -91,7 +97,11 @@ function init() {
       summaryGenerated = true;
       setSummaryLoading(false);
     }
-    applySummaryMode(true);
+    if (summaryApplied) {
+      applySummaryMode(true);
+    } else {
+      setStatus("Не удалось выделить ключевые фразы.");
+    }
   });
 
   originalBtn?.addEventListener("click", () => {
@@ -195,6 +205,9 @@ function init() {
           thinkingSummary = event.summary;
         }
       }
+      if (!summaryApplied) {
+        setStatus("Summary не применен. Проверьте ключ и модель.");
+      }
       setStatus("");
     } catch (error) {
       setStatus(String(error));
@@ -233,7 +246,9 @@ function init() {
     await generateSummary();
     summaryGenerated = true;
     setSummaryLoading(false);
-    applySummaryMode(true);
+    if (summaryApplied) {
+      applySummaryMode(true);
+    }
   }
 
   autoSummary();
@@ -392,6 +407,7 @@ function articleExtractMdTool() {
           node.innerHTML = item.html;
           applied += 1;
         }
+        summaryApplied = applied > 0;
         return { ok: applied > 0, applied };
       },
       inputSchema,
