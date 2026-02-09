@@ -244,8 +244,6 @@ function init() {
     storageSet({ [HISTORY_KEY]: history });
   }
 
-  maybeAutoRun();
-
   function restoreUndo() {
     if (!api?.storage?.local) return;
     storageGet([UNDO_KEY], (res) => {
@@ -261,6 +259,18 @@ function init() {
     storageSet({ [UNDO_KEY]: undoStack.slice(-5) });
   }
 
+  function loadSettings() {
+    return new Promise((resolve) => {
+      if (!api?.storage?.local) {
+        resolve(null);
+        return;
+      }
+      storageGet([STORAGE_KEY], (res) => {
+        resolve(res?.[STORAGE_KEY] ?? null);
+      });
+    });
+  }
+
   async function getAdapter() {
     const settings = await loadSettings();
     const baseURL = settings?.baseUrl?.trim() || DEFAULT_BASE_URL;
@@ -274,72 +284,6 @@ function init() {
       baseURL,
       apiKey,
       dangerouslyAllowBrowser: true
-    });
-  }
-
-  function captureBodyHtml() {
-    try {
-      const clone = document.body.cloneNode(true);
-      const node = clone.querySelector(`#${ROOT_ID}`);
-      if (node) node.remove();
-      return clone.innerHTML;
-    } catch {
-      return null;
-    }
-  }
-
-  function restoreBodyHtml(html) {
-    const existingRoot = document.getElementById(ROOT_ID);
-    document.body.innerHTML = html;
-    if (existingRoot) {
-      document.body.appendChild(existingRoot);
-    }
-  }
-
-  function ensureSkillTag() {
-    if (document.getElementById(SKILL_ID)) return;
-    const skill = document.createElement("script");
-    skill.type = "text/markdown";
-    skill.id = SKILL_ID;
-    skill.textContent = `---\nname: habr.article\n---\n# Goal\nWork only on Habr article pages. Extract the article in Markdown, rank paragraphs for importance, highlight key paragraphs, and insert a TTS player.\n\n# Steps\n1) Call articleExtractMd to get title, markdown, and paragraphs.\n2) Ask the model to rank paragraphs and pick the top N.\n3) Call highlightParagraphs with the selected indices.\n4) Call insertTtsPlayer with the markdown to add a Russian TTS player before the first paragraph.\n\n# Rules\n- Do not modify or remove the element with id '__bak-root'.\n- Use only the provided tools for DOM changes.\n- Confirm what changed in a short response.`;
-    document.documentElement.appendChild(skill);
-  }
-
-  globalThis.__bakPageAgent = {
-    toggle
-  };
-}
-
-function storageGet(keys, cb) {
-  try {
-    const result = api.storage.local.get(keys, cb);
-    if (result && typeof result.then === "function") {
-      result.then((res) => cb(res)).catch(() => {});
-    }
-  } catch {
-    // ignore
-  }
-}
-
-  function storageSet(data) {
-  try {
-    const result = api.storage.local.set(data);
-    if (result && typeof result.catch === "function") {
-      result.catch(() => {});
-    }
-  } catch {
-    // ignore
-  }
-
-  function loadSettings() {
-    return new Promise((resolve) => {
-      if (!api?.storage?.local) {
-        resolve(null);
-        return;
-      }
-      storageGet([STORAGE_KEY], (res) => {
-        resolve(res?.[STORAGE_KEY] ?? null);
-      });
     });
   }
 
@@ -409,6 +353,62 @@ function storageGet(keys, cb) {
     } catch (error) {
       addAssistantMessage(`${String(error)}`);
     }
+  }
+
+  function captureBodyHtml() {
+    try {
+      const clone = document.body.cloneNode(true);
+      const node = clone.querySelector(`#${ROOT_ID}`);
+      if (node) node.remove();
+      return clone.innerHTML;
+    } catch {
+      return null;
+    }
+  }
+
+  function restoreBodyHtml(html) {
+    const existingRoot = document.getElementById(ROOT_ID);
+    document.body.innerHTML = html;
+    if (existingRoot) {
+      document.body.appendChild(existingRoot);
+    }
+  }
+
+  function ensureSkillTag() {
+    if (document.getElementById(SKILL_ID)) return;
+    const skill = document.createElement("script");
+    skill.type = "text/markdown";
+    skill.id = SKILL_ID;
+    skill.textContent = `---\nname: habr.article\n---\n# Goal\nWork only on Habr article pages. Extract the article in Markdown, rank paragraphs for importance, highlight key paragraphs, and insert a TTS player.\n\n# Steps\n1) Call articleExtractMd to get title, markdown, and paragraphs.\n2) Ask the model to rank paragraphs and pick the top N.\n3) Call highlightParagraphs with the selected indices.\n4) Call insertTtsPlayer with the markdown to add a Russian TTS player before the first paragraph.\n\n# Rules\n- Do not modify or remove the element with id '__bak-root'.\n- Use only the provided tools for DOM changes.\n- Confirm what changed in a short response.`;
+    document.documentElement.appendChild(skill);
+  }
+
+  globalThis.__bakPageAgent = {
+    toggle
+  };
+
+  maybeAutoRun();
+}
+
+function storageGet(keys, cb) {
+  try {
+    const result = api.storage.local.get(keys, cb);
+    if (result && typeof result.then === "function") {
+      result.then((res) => cb(res)).catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function storageSet(data) {
+  try {
+    const result = api.storage.local.set(data);
+    if (result && typeof result.catch === "function") {
+      result.catch(() => {});
+    }
+  } catch {
+    // ignore
   }
 }
 
